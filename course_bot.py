@@ -56,12 +56,31 @@ class DetailsView(discord.ui.View):
 
 
 class TaskListView(discord.ui.View):
-    """Paginate one private response without posting a message for every task."""
+    """Show up to three separate task embeds in one private message."""
     def __init__(self, client, user_id, pages):
         super().__init__(timeout=840)
         self.client = client
         self.user_id = user_id
-        self.pages = pages
+        self.pages = []
+        self.starts = []
+        batch = []
+        characters = 0
+        for index, card in enumerate(pages):
+            size = len(discord.Embed.from_dict(card['embed']))
+            if size > 6000:
+                raise ValueError('Task card exceeds Discord character limit')
+            if batch and (len(batch) == 3 or characters + size > 6000):
+                self.pages.append(batch)
+                batch = []
+                characters = 0
+            if not batch:
+                self.starts.append(index)
+            batch.append(card)
+            characters += size
+        if batch:
+            self.pages.append(batch)
+        if not self.pages:
+            raise ValueError('No task cards')
         self.page = 0
         self.update_buttons()
 
@@ -69,10 +88,18 @@ class TaskListView(discord.ui.View):
         self.previous.disabled = self.page == 0
         self.next.disabled = self.page == len(self.pages) - 1
         self.clear_items()
-        for link in self.pages[self.page].get('links', []):
-            self.add_item(discord.ui.Button(label=link['label'], url=link['url'], row=0))
+        for offset, card in enumerate(self.pages[self.page], self.starts[self.page] + 1):
+            for link in card.get('links', []):
+                label = link['label'].replace('Ouvrir les consignes', 'Consignes').replace('Choisir un créneau', 'Créneau')
+                row = 0 if link['label'] == 'Ouvrir les consignes' else 1
+                self.add_item(discord.ui.Button(label=str(offset) + ' · ' + label, url=link['url'], row=row))
         self.add_item(self.previous)
         self.add_item(self.next)
+
+    def message_payload(self):
+        return {'content': '**À faire · Page ' + str(self.page + 1) + '/' + str(len(self.pages)) + '**',
+                'embeds': [discord.Embed.from_dict(card['embed']) for card in self.pages[self.page]],
+                'view': self, 'allowed_mentions': discord.AllowedMentions.none()}
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.user_id:
@@ -83,14 +110,13 @@ class TaskListView(discord.ui.View):
     async def move(self, interaction, offset):
         self.page = max(0, min(len(self.pages) - 1, self.page + offset))
         self.update_buttons()
-        await interaction.response.edit_message(embed=discord.Embed.from_dict(self.pages[self.page]['embed']), view=self,
-                                                allowed_mentions=discord.AllowedMentions.none())
+        await interaction.response.edit_message(**self.message_payload())
 
-    @discord.ui.button(label='← Précédent', style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label='← Précédent', style=discord.ButtonStyle.secondary, row=2)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.move(interaction, -1)
 
-    @discord.ui.button(label='Suivant →', style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label='Suivant →', style=discord.ButtonStyle.secondary, row=2)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.move(interaction, 1)
 
@@ -242,7 +268,7 @@ class CourseBot(discord.Client):
             await asyncio.to_thread(remember_private_card,DATA,message.id,interaction.user.id,event)
 
     def register_commands(self):
-        @self.tree.command(name='a-faire',description='Voir quoi préparer : prochaine échéance d’abord, une tâche par carte privée.',guild=self.scope)
+        @self.tree.command(name='a-faire',description='Prochaines échéances en privé : trois tâches par message, une carte chacune.',guild=self.scope)
         @app_commands.describe(cours='Choisir un cours ou tous les cours',passees='Inclure aussi les dates passées, après les tâches à venir')
         @app_commands.choices(cours=[app_commands.Choice(name=name,value=name) for name in ['tous','AAIT','AITDM','Big Data','SOS']])
         async def a_faire(interaction:discord.Interaction,cours:str='tous',passees:bool=False):
@@ -251,12 +277,11 @@ class CourseBot(discord.Client):
             await interaction.response.defer(ephemeral=True,thinking=True)
             try:
                 pages = await asyncio.to_thread(current_task_pages,DATA,configuration(),cours,include_past=passees)
+                view = TaskListView(self,interaction.user.id,pages)
             except (OSError,ValueError,sqlite3.Error):
                 await interaction.followup.send('La liste est indisponible. /status indique le dernier état connu.',ephemeral=True)
                 return
-            await interaction.followup.send(embed=discord.Embed.from_dict(pages[0]['embed']),
-                view=TaskListView(self,interaction.user.id,pages),ephemeral=True,
-                allowed_mentions=discord.AllowedMentions.none())
+            await interaction.followup.send(**view.message_payload(),ephemeral=True)
 
         @self.tree.command(name='status',description='Vérifier la santé, le prochain point et les annonces déjà envoyées.',guild=self.scope)
         async def status(interaction:discord.Interaction):

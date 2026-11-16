@@ -93,7 +93,7 @@ def task_pages(rows, now, course='tous'):
                  'description': (icon('project', '📌') + ' ' + when).strip(),
                  'color': color, 'fields': fields,
                  'footer': {'text': 'Tâche ' + str(index) + '/' + str(len(rows))
-                     + ' · Échéances à venir les plus proches d’abord · Heure de Bucarest'}}
+                     + ' · Heure de Bucarest'}}
         if links:
             embed['url'] = links[0]['url']
         pages.append({'embed': embed, 'links': links})

@@ -92,7 +92,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(guild_id=1376984512046563519,channel_id=1570209088929800282,
             user=SimpleNamespace(id=456,roles=[SimpleNamespace(id=1570209160744673411)]),
             response=SimpleNamespace(defer=AsyncMock()),followup=SimpleNamespace(send=AsyncMock()))
-        pages = [{'embed':{'title':'SOS · À faire','description':'Échéances connues'},'links':[]}]
+        pages = [{'embed':{'title':'SOS · Tâche ' + str(index),'description':'Échéances connues'},'links':[]}
+                 for index in range(1,7)]
         with patch('course_bot.configuration',return_value=self.config()), \
              patch('course_bot.current_task_pages',return_value=pages) as current:
             bot = CourseBot('fake-not-a-token')
@@ -100,19 +101,22 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             current.assert_called_once_with(unittest.mock.ANY,self.config(),'SOS',include_past=False)
             self.assertTrue(interaction.response.defer.await_args.kwargs['ephemeral'])
             sent = interaction.followup.send.await_args.kwargs
+            interaction.followup.send.assert_awaited_once()
+            self.assertEqual(len(sent['embeds']),3)
+            self.assertEqual([embed.title for embed in sent['embeds']],['SOS · Tâche 1','SOS · Tâche 2','SOS · Tâche 3'])
             self.assertTrue(sent['ephemeral'])
             self.assertFalse(sent['allowed_mentions'].everyone)
             self.assertFalse(sent['allowed_mentions'].roles)
             self.assertIsNone(bot.child)
             self.assertTrue(sent['view'].previous.disabled)
-            self.assertTrue(sent['view'].next.disabled)
+            self.assertFalse(sent['view'].next.disabled)
             await bot.close()
 
     async def test_task_pages_update_the_same_response_and_recheck_owner_and_access(self):
         client = SimpleNamespace(authorize=AsyncMock(return_value=True))
-        view = TaskListView(client,456,[
-            {'embed':{'title':'Page 1'},'links':[{'label':'Ouvrir les consignes','url':'https://curs.upb.ro/first'}]},
-            {'embed':{'title':'Page 2'},'links':[{'label':'Choisir un créneau','url':'https://curs.upb.ro/second'}]}])
+        view = TaskListView(client,456,[{'embed':{'title':'Tâche ' + str(index)},
+            'links':[{'label':'Ouvrir les consignes','url':'https://curs.upb.ro/' + str(index)}]}
+            for index in range(1,5)])
         intruder = SimpleNamespace(user=SimpleNamespace(id=999),response=SimpleNamespace(send_message=AsyncMock()))
         self.assertFalse(await view.interaction_check(intruder))
         client.authorize.assert_not_awaited()
@@ -120,12 +124,35 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await view.interaction_check(interaction))
         client.authorize.assert_awaited_once()
         await view.next.callback(interaction)
-        self.assertEqual(interaction.response.edit_message.await_args.kwargs['embed'].title,'Page 2')
+        sent = interaction.response.edit_message.await_args.kwargs
+        self.assertEqual([embed.title for embed in sent['embeds']],['Tâche 4'])
+        self.assertIn('2/2',sent['content'])
         self.assertTrue(view.next.disabled)
         self.assertFalse(view.previous.disabled)
-        self.assertEqual([child.url for child in view.children if child.url],['https://curs.upb.ro/second'])
+        self.assertEqual([child.url for child in view.children if child.url],['https://curs.upb.ro/4'])
+        self.assertEqual([child.label for child in view.children if child.url],['4 · Consignes'])
         await view.previous.callback(interaction)
         self.assertEqual(view.page,0)
+        self.assertEqual(len(interaction.response.edit_message.await_args.kwargs['embeds']),3)
+        view.stop()
+
+    async def test_task_batches_respect_aggregate_embed_limit_and_link_rows(self):
+        client = SimpleNamespace(authorize=AsyncMock(return_value=True))
+        cards = [{'embed':{'title':'Tâche ' + str(index),'description':'x' * 3100},
+                  'links':[{'label':'Ouvrir les consignes','url':'https://curs.upb.ro/' + str(index)},
+                           {'label':'Choisir un créneau','url':'https://example.com/' + str(index)}]}
+                 for index in range(1,7)]
+        view = TaskListView(client,456,cards)
+        self.assertEqual([card for batch in view.pages for card in batch],cards)
+        self.assertTrue(all(sum(len(discord.Embed.from_dict(card['embed'])) for card in batch) <= 6000
+                            for batch in view.pages))
+        view.stop()
+        for card in cards:
+            card['embed']['description'] = 'Court'
+        view = TaskListView(client,456,cards)
+        rows = view.to_components()
+        self.assertEqual([len(row['components']) for row in rows],[3,3,2])
+        self.assertEqual(len(view.pages),2)
         view.stop()
 
     async def test_past_dates_require_the_explicit_command_option(self):

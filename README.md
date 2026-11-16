@@ -6,7 +6,7 @@ Bot Discord personnel pour les cours UPB et les activités ESN Bucarest, exécut
 
 | Commande | Fonction |
 |---|---|
-| `/a-faire [cours] [passees]` | Prochaine échéance en premier. Une tâche par carte privée, boutons de navigation et liens directs. Dates passées masquées par défaut. |
+| `/a-faire [cours] [passees]` | Prochaine échéance en premier. Trois embeds distincts par message privé, une tâche par embed, boutons de navigation et liens numérotés. Dates passées masquées par défaut. |
 | `/cours [cours]` | Projets et échéances à venir, avec détails privés. |
 | `/actualiser` | Relire Moodle et Teams, publier les changements puis afficher un point privé. |
 | `/status` | Santé du bot et des sources, prochains passages, rappels et annonces acceptées par Discord, quota Luna et veille ESN. |
@@ -49,7 +49,7 @@ python -m pip install discord.py==2.7.1 tzdata
 python -m unittest test_course_tasks test_course_bot test_reminders test_discord_presentation test_course_health test_state
 ```
 
-Cette suite contient **61 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
+Cette suite contient **62 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
 
 ## Historique Git
 
