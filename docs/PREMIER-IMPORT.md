@@ -13,3 +13,7 @@ L’export n’a pas lu les fichiers secrets ni les sessions. Le dépôt exclut 
 Une retouche de l’emplacement de l’emoji a introduit une erreur de syntaxe après la première installation. Elle a été corrigée, les 24 tests directement concernés repassés puis le client et les quatre commandes revérifiés. Cette erreur n’est pas dans l’état importé. La sauvegarde d’avant commande reste dans `/var/backups/cours-watch/tasks-20261117`.
 
 Le contrôle technique de l’API et des callbacks ne constitue pas une confirmation humaine du clic sur la nouvelle pagination. Aucun message de test public ni ping n’a été ajouté pour cette commande.
+
+## Révision demandée après le premier push
+
+L’utilisateur a précisé que « récent » désignait l’échéance à venir la plus proche du moment de la commande. Le premier tri décroissant et les cinq tâches condensées par carte ont donc été remplacés : échéances futures croissantes, dates passées seulement avec `passees: vrai`, une seule tâche par carte avec date visible, action séparée et boutons de liens. Cette évolution constitue un nouveau commit et ne réécrit pas le premier import. La suite ciblée compte désormais 61 tests, dont priorité des échéances futures, ordre des dates passées et changement des boutons avec la pagination.

@@ -92,12 +92,12 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(guild_id=1376984512046563519,channel_id=1570209088929800282,
             user=SimpleNamespace(id=456,roles=[SimpleNamespace(id=1570209160744673411)]),
             response=SimpleNamespace(defer=AsyncMock()),followup=SimpleNamespace(send=AsyncMock()))
-        pages = [{'title':'SOS · À faire','description':'Échéances connues'}]
+        pages = [{'embed':{'title':'SOS · À faire','description':'Échéances connues'},'links':[]}]
         with patch('course_bot.configuration',return_value=self.config()), \
              patch('course_bot.current_task_pages',return_value=pages) as current:
             bot = CourseBot('fake-not-a-token')
             await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction,'SOS')
-            current.assert_called_once_with(unittest.mock.ANY,self.config(),'SOS')
+            current.assert_called_once_with(unittest.mock.ANY,self.config(),'SOS',include_past=False)
             self.assertTrue(interaction.response.defer.await_args.kwargs['ephemeral'])
             sent = interaction.followup.send.await_args.kwargs
             self.assertTrue(sent['ephemeral'])
@@ -110,7 +110,9 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_task_pages_update_the_same_response_and_recheck_owner_and_access(self):
         client = SimpleNamespace(authorize=AsyncMock(return_value=True))
-        view = TaskListView(client,456,[{'title':'Page 1'},{'title':'Page 2'}])
+        view = TaskListView(client,456,[
+            {'embed':{'title':'Page 1'},'links':[{'label':'Ouvrir les consignes','url':'https://curs.upb.ro/first'}]},
+            {'embed':{'title':'Page 2'},'links':[{'label':'Choisir un créneau','url':'https://curs.upb.ro/second'}]}])
         intruder = SimpleNamespace(user=SimpleNamespace(id=999),response=SimpleNamespace(send_message=AsyncMock()))
         self.assertFalse(await view.interaction_check(intruder))
         client.authorize.assert_not_awaited()
@@ -121,9 +123,21 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(interaction.response.edit_message.await_args.kwargs['embed'].title,'Page 2')
         self.assertTrue(view.next.disabled)
         self.assertFalse(view.previous.disabled)
+        self.assertEqual([child.url for child in view.children if child.url],['https://curs.upb.ro/second'])
         await view.previous.callback(interaction)
         self.assertEqual(view.page,0)
         view.stop()
+
+    async def test_past_dates_require_the_explicit_command_option(self):
+        interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=SimpleNamespace(defer=AsyncMock()),
+                                      followup=SimpleNamespace(send=AsyncMock()))
+        with patch('course_bot.configuration',return_value=self.config()), \
+             patch('course_bot.current_task_pages',return_value=[{'embed':{'title':'Past'},'links':[]}]) as current:
+            bot = CourseBot('fake-not-a-token')
+            bot.authorize = AsyncMock(return_value=True)
+            await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction,passees=True)
+            self.assertTrue(current.call_args.kwargs['include_past'])
+            await bot.close()
 
     async def test_task_storage_error_returns_a_private_explanation(self):
         import sqlite3

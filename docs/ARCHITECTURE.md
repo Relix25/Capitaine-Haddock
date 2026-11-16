@@ -6,7 +6,7 @@
 
 `course_reminders.py` rapproche les tâches configurées des sources effectivement collectées. Une date Moodle est reparsée dans le contenu courant ; les dates documentaires sont liées à l’empreinte du message ou du PDF. Une source modifiée impose une revalidation. Les rappels automatiques excluent les échéances passées ; `/a-faire` les conserve avec une indication neutre.
 
-`discord_presentation.py` construit les embeds et détails. `course_bot.py` maintient la connexion Gateway sortante, les commandes et les boutons. `bot_ui_data.py` lie les cartes privées à leur demandeur. `course_tasks.py` lit les tâches en SQLite en lecture seule, trie les dates par ordre décroissant et construit les pages privées. La pagination dure quatorze minutes et recontrôle le demandeur ainsi que l’autorisation du salon et du rôle.
+`discord_presentation.py` construit les embeds et détails. `course_bot.py` maintient la connexion Gateway sortante, les commandes et les boutons. `bot_ui_data.py` lie les cartes privées à leur demandeur. `course_tasks.py` lit les tâches en SQLite en lecture seule et affiche les échéances à venir de la plus proche à la plus lointaine. Une seule tâche par page : date en évidence, action séparée, liens sous forme de boutons. Les dates passées sont masquées par défaut ; si demandées, elles suivent les tâches à venir et précèdent les dates à confirmer. La pagination dure quatorze minutes et recontrôle le demandeur ainsi que l’autorisation du salon et du rôle. Les boutons de liens sont renouvelés avec la tâche affichée.
 
 `course_health.py` lit les rapports, timers et reçus ; il ne relance pas les plateformes. Le compteur de commandes est dérivé des commandes réellement déclarées dans le client.
 

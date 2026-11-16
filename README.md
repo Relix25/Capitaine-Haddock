@@ -6,12 +6,12 @@ Bot Discord personnel pour les cours UPB et les activités ESN Bucarest, exécut
 
 | Commande | Fonction |
 |---|---|
-| `/a-faire [cours]` | Tâches suivies, triées par échéance de la plus récente à la plus ancienne. Liste privée, cinq tâches par page, boutons Précédent/Suivant. |
+| `/a-faire [cours] [passees]` | Prochaine échéance en premier. Une tâche par carte privée, boutons de navigation et liens directs. Dates passées masquées par défaut. |
 | `/cours [cours]` | Projets et échéances à venir, avec détails privés. |
 | `/actualiser` | Relire Moodle et Teams, publier les changements puis afficher un point privé. |
 | `/status` | Santé du bot et des sources, prochains passages, rappels et annonces acceptées par Discord, quota Luna et veille ESN. |
 
-Les commandes exigent le rôle UPB dans le salon configuré. Les réponses de commandes sont éphémères et ne pingent personne. Une date passée dans `/a-faire` porte la mention « rendu à vérifier » : le bot ne connaît pas les dépôts et passages à l’oral personnels. Les dates non validées sont en fin de liste. Le filtre accepte `tous`, `AAIT`, `AITDM`, `Big Data` et `SOS`.
+Les commandes exigent le rôle UPB dans le salon configuré. Les réponses de commandes sont éphémères et ne pingent personne. `/a-faire` commence par la date à venir la plus proche du moment de la commande. L’option `passees: vrai` ajoute les dates antérieures après les tâches à venir, de la plus proche à la plus ancienne ; elles portent « rendu personnel à vérifier ». Le bot ne connaît pas les dépôts et passages à l’oral personnels. Les dates non validées sont en fin de liste. Le filtre accepte `tous`, `AAIT`, `AITDM`, `Big Data` et `SOS`.
 
 ## Fonctions
 
@@ -49,7 +49,7 @@ python -m pip install discord.py==2.7.1 tzdata
 python -m unittest test_course_tasks test_course_bot test_reminders test_discord_presentation test_course_health test_state
 ```
 
-Cette suite contient **59 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
+Cette suite contient **61 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
 
 ## Historique Git
 

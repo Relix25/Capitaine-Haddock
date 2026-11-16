@@ -11,10 +11,11 @@ from course_reminders import resolve_task
 from discord_presentation import safe, safe_url
 from haddock_emojis import icon
 
-PAGE_SIZE = 5
+MONTHS_FR = ('janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+             'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre')
 
 
-def task_rows(data_dir, config, course='tous', now=None):
+def task_rows(data_dir, config, course='tous', now=None, *, include_past=False):
     settings = json.loads(Path(config.get('reminders_file', '/etc/cours-watch/reminders.json')).read_text())
     tz = ZoneInfo(settings.get('timezone', 'Europe/Bucharest'))
     moment = now.astimezone(tz) if now else datetime.now(tz)
@@ -24,13 +25,17 @@ def task_rows(data_dir, config, course='tous', now=None):
         for task in settings.get('tasks', []):
             if course != 'tous' and task['course'] != course:
                 continue
-            resolved = resolve_task(state, task, moment, settings.get('policy', {}), include_past=True)
+            resolved = resolve_task(state, task, moment, settings.get('policy', {}), include_past=include_past)
             if resolved:
                 rows.append(resolved)
-    # Dated tasks descend by deadline; dates needing validation stay last.
-    rows.sort(key=lambda row: (row['task']['course'], row['task']['id']))
-    rows.sort(key=lambda row: (row.get('due') is not None,
-        row.get('due', datetime.min.replace(tzinfo=tz))), reverse=True)
+    def order(row):
+        if row['unconfirmed']:
+            return (2, 0, row['task']['id'])
+        if row['priority'] is None:
+            return (1, -row['due'].timestamp(), row['task']['id'])
+        return (0, row['due'].timestamp(), row['task']['id'])
+    # Nearest upcoming deadline first; optional past dates, then unknown dates.
+    rows.sort(key=order)
     return rows, moment
 
 
@@ -41,46 +46,60 @@ def _plain(value, limit):
 
 def task_pages(rows, now, course='tous'):
     if not rows:
-        return [{'title': 'À faire · ' + _plain(course, 60), 'color': 0x3498DB,
-                 'description': 'Aucune tâche suivie pour cette sélection.',
-                 'footer': {'text': 'Liste issue des rappels configurés · /actualiser pour relire les plateformes'}}]
+        return [{'embed': {'title': 'À faire · ' + _plain(course, 60), 'color': 0x3498DB,
+                 'description': 'Aucune tâche à venir suivie pour cette sélection.\n\n'
+                                'L’option **passees: vrai** permet de retrouver les dates antérieures.',
+                 'footer': {'text': '/actualiser pour relire les plateformes'}}, 'links': []}]
     pages = []
-    count = (len(rows) + PAGE_SIZE - 1) // PAGE_SIZE
-    for start in range(0, len(rows), PAGE_SIZE):
-        fields = []
-        for row in rows[start:start + PAGE_SIZE]:
-            task = row['task']
-            if row['unconfirmed']:
-                when = 'DATE À CONFIRMER — ' + row['reason']
+    for index, row in enumerate(rows, 1):
+        task = row['task']
+        color = 0x3498DB
+        if row['unconfirmed']:
+            when = '**Date à confirmer**\n' + _plain(row['reason'], 300)
+            color = 0xF39C12
+        else:
+            due = row['due']
+            when = '**' + str(due.day) + ' ' + MONTHS_FR[due.month - 1] + ' ' + str(due.year) + '**'
+            if row['has_time']:
+                when += ' à **' + due.strftime('%H:%M') + '**'
+                if due.hour == due.minute == 0:
+                    when += ' — début de journée'
             else:
-                due = row['due']
-                when = due.strftime('%d/%m/%Y à %H:%M') if row['has_time'] else due.strftime('%d/%m/%Y') + ' · heure non publiée'
-                if row['has_time'] and due.hour == due.minute == 0:
-                    when += ' (début de journée)'
-                if row['priority'] is None:
-                    when += ' · date passée, rendu à vérifier'
-                elif row['priority'][0] == 0:
-                    when += ' · URGENT'
+                when += '\nHeure non publiée'
+            if row['priority'] is None:
+                when += '\n\nDate passée · rendu personnel à vérifier'
+                color = 0x95A5A6
+            else:
+                days = (due.date() - now.date()).days
+                countdown = 'Aujourd’hui' if days == 0 else 'Demain' if days == 1 else 'Dans ' + str(days) + ' jours'
+                if row['priority'][0] == 0:
+                    countdown += ' · URGENT'
+                    color = 0xE74C3C
                 elif row['priority'][0] == 1:
-                    when += ' · IMPORTANT'
-                if row['stale']:
-                    when += '\nDernière date connue · source à revérifier'
-            value = '**' + _plain(when, 340) + '**\n' + _plain(task.get('action', ''), 450)
-            for key, label in (('url', 'Consignes'), ('planning_url', 'Planning')):
-                url = safe_url(task.get(key))
-                if url and not any(char in url for char in '<>'):
-                    value += '\n[' + label + '](<' + url + '>)'
-            fields.append({'name': _plain(task['course'] + ' · ' + task['title'], 180),
-                           'value': value[:1024], 'inline': False})
-        pages.append({'title': 'À faire · ' + _plain(course, 60),
-            'description': (icon('project') + ' Échéances : plus récente → plus ancienne. Dates à confirmer en fin de liste.\n'
-                           'Tâches suivies ; dépôt et passage à l’oral personnels non vérifiés.').lstrip(),
-            'color': 0x3498DB, 'fields': fields,
-            'footer': {'text': 'Page ' + str(len(pages) + 1) + '/' + str(count)
-                + ' · ' + str(len(rows)) + ' tâches · Europe/Bucharest · /actualiser pour mettre à jour'}})
+                    countdown += ' · IMPORTANT'
+                    color = 0xF39C12
+                when += '\n\n**' + countdown + '**'
+        fields = [{'name': 'À faire', 'value': _plain(task.get('action') or 'Consulter les consignes.', 1024),
+                   'inline': False}]
+        if row.get('stale'):
+            fields.append({'name': 'Source à revérifier', 'value': 'Dernière date connue ; dernier accès à la plateforme en échec.',
+                           'inline': False})
+        links = []
+        for key, label in (('url', 'Ouvrir les consignes'), ('planning_url', 'Choisir un créneau')):
+            url = safe_url(task.get(key))
+            if url and not any(char in url for char in '<>'):
+                links.append({'label': label, 'url': url})
+        embed = {'title': _plain(task['course'] + ' · ' + task['title'], 256),
+                 'description': (icon('project', '📌') + ' ' + when).strip(),
+                 'color': color, 'fields': fields,
+                 'footer': {'text': 'Tâche ' + str(index) + '/' + str(len(rows))
+                     + ' · Échéances à venir les plus proches d’abord · Heure de Bucarest'}}
+        if links:
+            embed['url'] = links[0]['url']
+        pages.append({'embed': embed, 'links': links})
     return pages
 
 
-def current_task_pages(data_dir, config, course='tous', now=None):
-    rows, moment = task_rows(data_dir, config, course, now)
+def current_task_pages(data_dir, config, course='tous', now=None, *, include_past=False):
+    rows, moment = task_rows(data_dir, config, course, now, include_past=include_past)
     return task_pages(rows, moment, course)

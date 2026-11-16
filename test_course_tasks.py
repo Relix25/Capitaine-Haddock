@@ -31,20 +31,22 @@ class TaskTests(unittest.TestCase):
             [Item(task['reference']['key'],ident,'Due: ' + due,task['url'])]))
         return task
 
-    def load(self, course='tous'):
+    def load(self, course='tous', *, include_past=False):
         path = self.root / 'reminders.json'
         path.write_text(json.dumps({'tasks':self.tasks}),encoding='utf-8')
-        return task_rows(self.root,{'reminders_file':str(path)},course,self.now)[0]
+        return task_rows(self.root,{'reminders_file':str(path)},course,self.now,include_past=include_past)[0]
 
-    def test_dates_descend_across_courses_and_keep_elapsed_dates_without_claiming_missing_submission(self):
+    def test_nearest_upcoming_deadline_first_and_optional_past_dates_last(self):
         self.add('old','15 November 2026, 11:59 PM')
         self.add('new','21 January 2027, 11:59 PM',course='Big Data')
         self.add('middle','3 December 2026, 11:59 PM')
         rows = self.load()
-        self.assertEqual([r['task']['id'] for r in rows],['new','middle','old'])
-        pages = task_pages(rows,self.now)
-        value = pages[0]['fields'][-1]['value']
-        self.assertIn('date passée, rendu à vérifier',value)
+        self.assertEqual([r['task']['id'] for r in rows],['middle','new'])
+        archived = self.load(include_past=True)
+        self.assertEqual([r['task']['id'] for r in archived],['middle','new','old'])
+        pages = task_pages(archived,self.now)
+        value = pages[-1]['embed']['description']
+        self.assertIn('rendu personnel à vérifier',value)
         self.assertNotIn('non rendu',value)
         # The daily reminder policy continues to exclude elapsed deadlines.
         _, events = reminder_events(self.state,{'tasks':self.tasks},self.now)
@@ -68,8 +70,8 @@ class TaskTests(unittest.TestCase):
     def test_date_only_and_midnight_remain_distinct(self):
         self.add('midnight','17 November 2026, 12:00 AM')
         self.add('oral','18 November 2026, 12:00 AM',date_mode='published_date',date='2026-11-18')
-        text = str(task_pages(self.load(),self.now))
-        self.assertIn('heure non publiée',text)
+        text = str(task_pages(self.load(include_past=True),self.now))
+        self.assertIn('heure non publiée',text.casefold())
         self.assertIn('début de journée',text)
 
     def test_filter_and_explicit_completed_flag(self):
@@ -89,10 +91,17 @@ class TaskTests(unittest.TestCase):
         for index in range(12):
             self.add(str(index),'18 November 2026, 11:59 PM',title='@everyone **test**')
         pages = task_pages(self.load(),self.now)
-        self.assertEqual([len(page['fields']) for page in pages],[5,5,2])
+        self.assertEqual(len(pages),12)
+        self.assertTrue(all(len(page['embed']['fields']) == 1 for page in pages))
         self.assertNotIn('@everyone',str(pages))
         self.assertTrue(all(len(str(page)) < 6000 for page in pages))
-        self.assertTrue(all('Consignes' in field['value'] for page in pages for field in page['fields']))
+        self.assertTrue(all(page['links'][0]['label'] == 'Ouvrir les consignes' for page in pages))
+
+    def test_past_dates_closest_to_today_first_after_upcoming_dates(self):
+        self.add('recent','16 November 2026, 11:59 PM')
+        self.add('older','15 November 2026, 11:59 PM')
+        self.add('upcoming','18 November 2026, 11:59 PM')
+        self.assertEqual([r['task']['id'] for r in self.load(include_past=True)],['upcoming','recent','older'])
 
 
 if __name__ == '__main__':

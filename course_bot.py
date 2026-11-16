@@ -68,6 +68,11 @@ class TaskListView(discord.ui.View):
     def update_buttons(self):
         self.previous.disabled = self.page == 0
         self.next.disabled = self.page == len(self.pages) - 1
+        self.clear_items()
+        for link in self.pages[self.page].get('links', []):
+            self.add_item(discord.ui.Button(label=link['label'], url=link['url'], row=0))
+        self.add_item(self.previous)
+        self.add_item(self.next)
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.user_id:
@@ -78,14 +83,14 @@ class TaskListView(discord.ui.View):
     async def move(self, interaction, offset):
         self.page = max(0, min(len(self.pages) - 1, self.page + offset))
         self.update_buttons()
-        await interaction.response.edit_message(embed=discord.Embed.from_dict(self.pages[self.page]), view=self,
+        await interaction.response.edit_message(embed=discord.Embed.from_dict(self.pages[self.page]['embed']), view=self,
                                                 allowed_mentions=discord.AllowedMentions.none())
 
-    @discord.ui.button(label='Précédent', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='← Précédent', style=discord.ButtonStyle.secondary, row=1)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.move(interaction, -1)
 
-    @discord.ui.button(label='Suivant', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Suivant →', style=discord.ButtonStyle.secondary, row=1)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.move(interaction, 1)
 
@@ -237,19 +242,19 @@ class CourseBot(discord.Client):
             await asyncio.to_thread(remember_private_card,DATA,message.id,interaction.user.id,event)
 
     def register_commands(self):
-        @self.tree.command(name='a-faire',description='Tâches et dates, de la plus récente à la plus ancienne, en privé.',guild=self.scope)
-        @app_commands.describe(cours='Choisir un cours ou tous les cours')
+        @self.tree.command(name='a-faire',description='Voir quoi préparer : prochaine échéance d’abord, une tâche par carte privée.',guild=self.scope)
+        @app_commands.describe(cours='Choisir un cours ou tous les cours',passees='Inclure aussi les dates passées, après les tâches à venir')
         @app_commands.choices(cours=[app_commands.Choice(name=name,value=name) for name in ['tous','AAIT','AITDM','Big Data','SOS']])
-        async def a_faire(interaction:discord.Interaction,cours:str='tous'):
+        async def a_faire(interaction:discord.Interaction,cours:str='tous',passees:bool=False):
             if not await self.authorize(interaction):
                 return
             await interaction.response.defer(ephemeral=True,thinking=True)
             try:
-                pages = await asyncio.to_thread(current_task_pages,DATA,configuration(),cours)
+                pages = await asyncio.to_thread(current_task_pages,DATA,configuration(),cours,include_past=passees)
             except (OSError,ValueError,sqlite3.Error):
                 await interaction.followup.send('La liste est indisponible. /status indique le dernier état connu.',ephemeral=True)
                 return
-            await interaction.followup.send(embed=discord.Embed.from_dict(pages[0]),
+            await interaction.followup.send(embed=discord.Embed.from_dict(pages[0]['embed']),
                 view=TaskListView(self,interaction.user.id,pages),ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none())
 
