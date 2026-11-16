@@ -1,4 +1,4 @@
-"""Deploy three task embeds per private message, with rollback and verification."""
+"""Deploy the duplicate-URL embed fix, with rollback and verification."""
 import asyncio
 import hashlib
 import json
@@ -11,8 +11,8 @@ import time
 import urllib.request
 
 ROOT = Path('/opt/cours-watch')
-EXPECTED = {'course_bot.py':'44b5b40b751a9e882f39067a562fc3f530a89efeac09c40209a5461fa9f24672',
-            'course_tasks.py':'be0ab5ab8c410b8b8f4a5125641acac68458b56a6d274c9f02c62608589f41a2'}
+EXPECTED = {'course_bot.py':'6f4ff5116a12b68cd41553a11b87383286b765e1649a13ad72a95f80544eab60',
+            'course_tasks.py':'505bbfd1ae8d75465f7f915c80b0ca745ec66d301cdf4ed4e9de7eeb850f0a70'}
 FILES = ['course_bot.py','course_tasks.py','test_course_bot.py','test_course_tasks.py']
 
 
@@ -29,7 +29,7 @@ def main():
         'test_course_tasks','test_course_bot','test_reminders','test_discord_presentation',
         'test_course_health','test_state'],cwd=stage,
         env={**os.environ,'PYTHONPATH':str(stage) + ':' + str(ROOT)},check=True)
-    backup = Path('/var/backups/cours-watch/tasks-multi-embed-20261117')
+    backup = Path('/var/backups/cours-watch/tasks-embed-urls-20261117')
     backup.mkdir(mode=0o700,exist_ok=False)
     for name in FILES:
         shutil.copy2(ROOT / name,backup / name)
@@ -82,17 +82,19 @@ def main():
                     raise RuntimeError('Task grouping lost or duplicated a card')
                 if any(sum(len(discord.Embed.from_dict(card['embed'])) for card in batch) > 6000 for batch in view.pages):
                     raise RuntimeError('Message aggregate exceeds Discord limit')
+                if any(card['embed'].get('url') for batch in view.pages for card in batch):
+                    raise RuntimeError('Task embed URL may trigger Discord deduplication')
                 return {'message_pages':len(view.pages),'embeds_per_page':[len(batch) for batch in view.pages],
-                        'component_rows':len(view.to_components())}
+                        'component_rows':len(view.to_components()),'embed_url_deduplication_avoided':True}
             finally:
                 view.stop()
         grouped = asyncio.run(inspect_batches())
-        proof = {'ready':True,'registered':True,'command':'a-faire','tests':62,
+        proof = {'ready':True,'registered':True,'command':'a-faire','tests':63,
                  'sort':'upcoming_nearest_first','cards':len(pages),'max_embeds_per_message':3,**grouped,
                  'past_hidden_by_default':True,'tasks_including_past':len(all_rows),
                  'first_title':pages[0]['embed']['title'],'first_date':dated[0].isoformat() if dated else None,
                  'backup':str(backup)}
-        path = Path('/tmp/haddock-task-batches-proof.json')
+        path = Path('/tmp/haddock-task-embed-urls-proof.json')
         path.write_text(json.dumps(proof,ensure_ascii=False,indent=2))
         path.chmod(0o644)
         print(json.dumps(proof,ensure_ascii=False))

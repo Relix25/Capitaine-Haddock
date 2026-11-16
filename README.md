@@ -49,7 +49,7 @@ python -m pip install discord.py==2.7.1 tzdata
 python -m unittest test_course_tasks test_course_bot test_reminders test_discord_presentation test_course_health test_state
 ```
 
-Cette suite contient **62 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
+Cette suite contient **63 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
 
 ## Historique Git
 

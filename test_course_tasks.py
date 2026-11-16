@@ -103,6 +103,15 @@ class TaskTests(unittest.TestCase):
         self.add('upcoming','18 November 2026, 11:59 PM')
         self.assertEqual([r['task']['id'] for r in self.load(include_past=True)],['upcoming','recent','older'])
 
+    def test_tasks_sharing_one_source_remain_distinct_without_discord_url_deduplication(self):
+        source = 'https://teams.cloud.microsoft/'
+        for index in range(3):
+            self.add(str(index),'18 November 2026, 11:59 PM',url=source)
+        cards = task_pages(self.load(),self.now)
+        self.assertEqual(len(cards),3)
+        self.assertTrue(all('url' not in card['embed'] for card in cards))
+        self.assertEqual([card['links'][0]['url'] for card in cards],[source] * 3)
+
 
 if __name__ == '__main__':
     unittest.main()

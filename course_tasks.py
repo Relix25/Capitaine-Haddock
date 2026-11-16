@@ -94,8 +94,8 @@ def task_pages(rows, now, course='tous'):
                  'color': color, 'fields': fields,
                  'footer': {'text': 'Tâche ' + str(index) + '/' + str(len(rows))
                      + ' · Heure de Bucarest'}}
-        if links:
-            embed['url'] = links[0]['url']
+        # Discord hides subsequent embeds with the same top-level URL. Sources
+        # stay in their link buttons so separate tasks can share one document.
         pages.append({'embed': embed, 'links': links})
     return pages
 

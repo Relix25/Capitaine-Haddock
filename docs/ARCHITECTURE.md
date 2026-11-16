@@ -10,6 +10,8 @@
 
 `course_health.py` lit les rapports, timers et reçus ; il ne relance pas les plateformes. Le compteur de commandes est dérivé des commandes réellement déclarées dans le client.
 
+Les embeds de tâches n’ont pas d’URL de titre : Discord ne montre que le premier embed d’un message si plusieurs partagent la même URL. Les consignes et plannings restent dans les boutons numérotés, même lorsque plusieurs tâches renvoient au même document ou à Teams. Voir la [règle officielle de déduplication](https://github.com/discord/discord-api-docs/blob/main/developers/resources/message.mdx#embed-limits).
+
 ## Modules spécialisés
 
 | Domaine | Modules |
