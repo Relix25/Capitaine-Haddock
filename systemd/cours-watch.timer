@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily UPB course check at 08:00 Europe/Bucharest
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Bucharest
+Persistent=true
+AccuracySec=1min
+Unit=cours-watch.service
+
+[Install]
+WantedBy=timers.target

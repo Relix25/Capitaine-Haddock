@@ -1,0 +1,25 @@
+[Unit]
+Description=ESN Bucharest Linktree new-activity monitor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=courswatch
+Group=courswatch
+WorkingDirectory=/opt/cours-watch
+ExecStart=/opt/cours-watch/venv/bin/python /opt/cours-watch/esn_watch.py
+UMask=0077
+TimeoutStartSec=3min
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cours-watch
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=768M
+TasksMax=256
+Nice=10

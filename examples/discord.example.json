@@ -1,0 +1,13 @@
+{
+  "mode": "bot_channel",
+  "application_id": "YOUR_APPLICATION_ID",
+  "guild_id": "YOUR_GUILD_ID",
+  "channel_id": "YOUR_CHANNEL_ID",
+  "role_ids": ["YOUR_UPB_ROLE_ID"],
+  "user_ids": [],
+  "presentation": "embed",
+  "interactive": true,
+  "persona": "haddock",
+  "easter_egg": {"enabled": true, "cooldown_seconds": 2, "voice_probability": 0.5},
+  "luna": {"enabled": false, "model": "gpt-6-luna", "daily_token_limit": 1000000}
+}

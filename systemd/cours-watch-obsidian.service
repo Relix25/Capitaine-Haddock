@@ -1,0 +1,17 @@
+[Unit]
+Description=Publish collected UPB course evidence into the master Obsidian vault
+
+[Service]
+Type=oneshot
+User=vaultagent
+Group=vault
+UMask=0007
+ExecStart=/opt/cours-watch/venv/bin/python /opt/cours-watch/publish_course_vault.py /var/lib/cours-watch-publish/latest.json /var/lib/cours-watch-publish/documents /srv/obsidian/cours
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/obsidian/cours
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX

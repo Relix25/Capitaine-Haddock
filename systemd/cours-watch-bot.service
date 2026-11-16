@@ -1,0 +1,33 @@
+[Unit]
+Description=Capitaine Haddock Discord commands and private detail buttons
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/cours-watch/bot-ready
+StartLimitIntervalSec=120
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=courswatch
+Group=courswatch
+WorkingDirectory=/opt/cours-watch
+ExecStart=/opt/cours-watch/bot-venv/bin/python /opt/cours-watch/course_bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10
+UMask=0077
+TimeoutStopSec=30
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cours-watch
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=3G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

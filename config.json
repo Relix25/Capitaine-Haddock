@@ -1,0 +1,11 @@
+{
+  "timeout_ms": 40000,
+  "timezone": "Europe/Bucharest",
+  "courses": [
+    {"id":"AAIT","label":"AAIT · Crafter","moodle_url":"https://curs.upb.ro/2026/course/view.php?id=2245","team_name":"03-ACS-M-CTI-A2-S1-AAIT-IA-2026"},
+    {"id":"AITDM","label":"AI for Trustworthy Decision Making","moodle_url":"https://curs.upb.ro/2026/course/view.php?id=2246","team_name":"03-ACS-M-CTI-A2-S1-AIforTDM-IA-2026"},
+    {"id":"BDFA","label":"Big Data","moodle_url":"https://curs.upb.ro/2026/course/view.php?id=2228","team_name":"03-ACS-M-CTI-A2-S1-BDFA-SPF-2026"},
+    {"id":"SOS","label":"Self-organizing systems","moodle_url":"https://curs.upb.ro/2026/course/view.php?id=2209","team_name":"03-ACS-M-CTI-A2-S1-SS-IA-2026"}
+  ],
+  "discord": {"mode":"disabled","user_ids":[],"role_ids":[]}
+}

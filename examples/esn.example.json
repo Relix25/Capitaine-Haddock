@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "profile": "https://linktr.ee/BucharestEvents",
+  "guild_id": "YOUR_GUILD_ID",
+  "channel_id": "YOUR_CHANNEL_ID",
+  "role_id": "YOUR_ESN_ROLE_ID",
+  "interval_seconds": 300
+}

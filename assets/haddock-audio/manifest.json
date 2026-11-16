@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "samples": [
+    {
+      "id": "abordage",
+      "label": "Abordage",
+      "file": "abordage.ogg",
+      "duration_secs": 4.9774,
+      "waveform": "AQEBAQYkGi43LB8aMBICAQECEBESDxkYJyIVFgUEAgwOEBASFiAfJx8KCgUCJDgjJCc=",
+      "sha256": "99907028859c0b7d29c38ff4021aaeccc721e6ff2556ceb560abd83d4f2d0e30",
+      "source_url": "https://zonesons.com/dessins-animes/tintin-et-le-lac-aux-requins/434864",
+      "original_sha256": "008554b2a43bdd4129c8b3b0f62728e007bd4732432b63950dc44898db3935dc",
+      "format": "ogg/opus",
+      "channels": 1,
+      "sample_rate": 48000
+    },
+    {
+      "id": "parachute",
+      "label": "Parachute",
+      "file": "parachute.ogg",
+      "duration_secs": 4.9774,
+      "waveform": "FB4UGBwcFhshHBwWIioYLCQRESIZFSceJisaEBYgGyUiFCYWDg4PERI1MiESFywZFBo=",
+      "sha256": "a5321ec2ac316d3e2f3de617f8545a0dac2e672c5e777a940a0dfb9bb788083b",
+      "source_url": "https://zonesons.com/dessins-animes/tintin-et-le-lac-aux-requins/434394",
+      "original_sha256": "9a0fe7df0d3d188508d473bfe92b6aa65c31a7f157eb13a2b2160e16fa26182e",
+      "format": "ogg/opus",
+      "channels": 1,
+      "sample_rate": 48000
+    },
+    {
+      "id": "bachi_bouzouk",
+      "label": "Bachi-bouzouk",
+      "file": "bachi_bouzouk.ogg",
+      "duration_secs": 2.7831,
+      "waveform": "AwMdBjgQDAgPFwwbJjoyIhUlDDQ+DR4VIgcHFA==",
+      "sha256": "a24ba627672c8e16e5d6fe8670dc005614387d0df95cf7598c167e911028730a",
+      "source_url": "https://zonesons.com/dessins-animes/les-aventures-de-tintin-1959/487685",
+      "original_sha256": "5c7452ab090eca6c702639eff4c82892e17dfc70e1ca8c104bbf33874076f987",
+      "format": "ogg/opus",
+      "channels": 1,
+      "sample_rate": 48000
+    },
+    {
+      "id": "cafe",
+      "label": "Café",
+      "file": "cafe.ogg",
+      "duration_secs": 10.0974,
+      "waveform": "AwMhJxwZKDAZDiMrIhMmJCcfDyAcCCceFAsFAgICAgsHCDE2CR4rER8iECAXKikfGCMMDwsLEiwHIQ4eJzIXCgcFBAQDAwUfEBQODQ8SGhIdIyAeIB8lIB4wSTwZKyYVGBwSGxE=",
+      "sha256": "c553c10f3e77a54360ca9a6907bdb239673f0f5064f2ddaa7febe725fd6335dd",
+      "source_url": "https://zonesons.com/dessins-animes/les-aventures-de-tintin-1959/487281",
+      "original_sha256": "05d3281622631f09c610e0b965a4530dfa95c58e7bbf503b08adbd31684904d4",
+      "format": "ogg/opus",
+      "channels": 1,
+      "sample_rate": 48000
+    },
+    {
+      "id": "scolopendres",
+      "label": "Scolopendres",
+      "file": "scolopendres.ogg",
+      "duration_secs": 3.6713,
+      "waveform": "AgQsIDFKPQkhIScvGAYEAwMJGCUaGQYiJx8XEhsIGCodCwUEBA==",
+      "sha256": "6546dd1956de91c63dc35de3f9b695f800d4d0ae4bf953630db7a8ba2b6adbb6",
+      "source_url": "https://zonesons.com/dessins-animes/les-aventures-de-tintin-1959/487636",
+      "original_sha256": "2ceddd48e5d6529b62117cebb18db41a90419314ef4e3937fff585cd83a50c89",
+      "format": "ogg/opus",
+      "channels": 1,
+      "sample_rate": 48000
+    }
+  ]
+}

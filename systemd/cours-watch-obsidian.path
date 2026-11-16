@@ -1,0 +1,9 @@
+[Unit]
+Description=Publish fresh UPB snapshots when the collector updates its safe handoff
+
+[Path]
+PathChanged=/var/lib/cours-watch-publish/latest.json
+Unit=cours-watch-obsidian.service
+
+[Install]
+WantedBy=multi-user.target

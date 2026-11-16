@@ -1,0 +1,29 @@
+[Unit]
+Description=UPB course changes: Moodle and Teams browser scan
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/cours-watch/ready
+ConditionPathExists=!/var/lib/cours-watch/login.active
+
+[Service]
+Type=oneshot
+User=courswatch
+Group=courswatch
+WorkingDirectory=/opt/cours-watch
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/cours-watch/browsers
+Environment=COURS_WATCH_SECRETS=/etc/cours-watch/secrets.json
+ExecStart=/opt/cours-watch/venv/bin/python /opt/cours-watch/cours_watch.py scan
+SuccessExitStatus=2
+UMask=0077
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cours-watch
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=3G
+TasksMax=256
+

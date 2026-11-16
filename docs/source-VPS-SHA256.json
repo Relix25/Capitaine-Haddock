@@ -1,0 +1,398 @@
+[
+  {
+    "path": "README.md",
+    "sha256": "a431de18e0ae305bbaf4ccc4abce11f11550bd931ca85f2fcce2e6aa2351d579"
+  },
+  {
+    "path": "activate_bot.py",
+    "sha256": "78b2195bd5d4dc35e353e9f2d9d03a5a5ee4389ff9dc5d3de59c3bd08c7d889b"
+  },
+  {
+    "path": "activate_easter_egg.py",
+    "sha256": "b0372fa139ca9a48336f900bf3882dfe1116d432f502de1ca3c45122190a7b31"
+  },
+  {
+    "path": "activate_haddock_voice.py",
+    "sha256": "6b1564f57704a427d69888a09e956c0aee7622020eddd4120782d3bd342755bf"
+  },
+  {
+    "path": "activate_luna.py",
+    "sha256": "834d71ab2b12c8c486823c21d47ddb6656089394d544d678c2acb7bbc7c12adc"
+  },
+  {
+    "path": "audit_luna_usage.py",
+    "sha256": "9b60590393a3afca927b6f2cd382369be65e055560cc0d597f8642d0f8c1e913"
+  },
+  {
+    "path": "audit_moodle_pdf_versions.py",
+    "sha256": "89d1ebb806c62dfa5b55f44af477affe2d7ab70307e90be95f32f3306d94a0cb"
+  },
+  {
+    "path": "backfill_translations.py",
+    "sha256": "5e6efa76697239ce2353a275e177262a89cd58a9b4b6c68525b09223770a9a00"
+  },
+  {
+    "path": "bot_ui_data.py",
+    "sha256": "c6304a19f52ec6f5671e78f8fe48dd38f19e642537dd2dfc87ccf7360d7e4110"
+  },
+  {
+    "path": "browser_smoke.py",
+    "sha256": "62906606d7a1def20784399d01aa46125a2aa4e6b3d808c895e7703cb4e3bfc5"
+  },
+  {
+    "path": "check_bot_token_format.py",
+    "sha256": "ece210fd326df18346289bff0adbf60ef67bed817b76bb48f636ad1042a671ee"
+  },
+  {
+    "path": "configure_bot.py",
+    "sha256": "f185647fb1e8b6690ab7f27a13744a1f1c5b5d175c586cb3cc5ac4fdf104e5b7"
+  },
+  {
+    "path": "configure_discord.py",
+    "sha256": "53cde4ec44e600757609678cea588d2d3d6eb05d420a77a2d4adc7b77765e4d9"
+  },
+  {
+    "path": "configure_esn.py",
+    "sha256": "6ab239dde45fe81daf6fc99c7a7df6cba3a63e247aa9dc0f44672bd8da58fd16"
+  },
+  {
+    "path": "configure_role.py",
+    "sha256": "969e40779ff3344e89f0322a506f9bc57dc465b862750da0ef18aec2a0c7a31b"
+  },
+  {
+    "path": "configure_webhook.py",
+    "sha256": "1b7c926948c145a4504bffc5ca9c0e2032d41f25053c342fdfefead356722b05"
+  },
+  {
+    "path": "cours_watch.py",
+    "sha256": "cfadd78318b29bf9228c240aad2893f438229a961945adfe54d3db1e117d29f2"
+  },
+  {
+    "path": "course_bot.py",
+    "sha256": "619d3321522c761681c14ec529e55b90701656cbb0af9582e660f13f93e0d0c5"
+  },
+  {
+    "path": "course_capture.py",
+    "sha256": "9bfa77338cb9f368022e05c9941f4dafbf587240303b29f36b19c128db1e7b10"
+  },
+  {
+    "path": "course_health.py",
+    "sha256": "bfd7703835465ea3712e446d5afa4c58cb3fbaf8d6e5a880770c8c2696677464"
+  },
+  {
+    "path": "course_obsidian.py",
+    "sha256": "497fb7b9509a776d06e96a340c47c665ca5fce271176f10d16089dd492b85226"
+  },
+  {
+    "path": "course_pdf_publish.py",
+    "sha256": "a9c8978a8511f59491b2164918a6f4d7db61a09e8e3c7b7cd72944051638ebab"
+  },
+  {
+    "path": "course_reminders.py",
+    "sha256": "74e87abd446b8589c5aa77eb806a0119adf0b418dbf958e39fbec3327d3217e5"
+  },
+  {
+    "path": "course_tasks.py",
+    "sha256": "89ff9161960e6a4a87b4449ce09256ae89021d8908a81d513bee717e0355932f"
+  },
+  {
+    "path": "course_translation.py",
+    "sha256": "5072c2d1a8ee86e0fbdd47ac1766d1779b8cd815d293dc82f3f48adc95b0c6c2"
+  },
+  {
+    "path": "diagnose_easter_egg.py",
+    "sha256": "497a2d0f40c303760d89287acf9224e62a8c586c5c3832762ed720ba823be1de"
+  },
+  {
+    "path": "diagnose_luna_failure.py",
+    "sha256": "8f5d06823392d481ce584ba6a16604f46940c68933d343c25007f922d3658760"
+  },
+  {
+    "path": "discord_emoji_admin.py",
+    "sha256": "fec4e90820785f3fa6e2835de7d175b03da0f3d4a4ef8ecfbc2da4fbb11d83e1"
+  },
+  {
+    "path": "discord_presentation.py",
+    "sha256": "37f99c3bde6dfb0f09ae1cd48300ca9efa72e3a7e5887dea361c41e94c5412b0"
+  },
+  {
+    "path": "esn_watch.py",
+    "sha256": "9742517c8a35c2ee7a4c4061d47956be5a57c9f509f50908b69b4b872ad81c68"
+  },
+  {
+    "path": "export_course_evidence.py",
+    "sha256": "47c65c45968f5f79819bb5fe54fd4a9e4e667735374ec4948b3c20cbb1b5ffe6"
+  },
+  {
+    "path": "fetch_aait_guidelines.py",
+    "sha256": "6336cb7adcd6e5da66c74427ab27edb72eeea046e65a8d9b9056ff8be8f17c5f"
+  },
+  {
+    "path": "haddock_easter_egg.py",
+    "sha256": "3a7779aedc3f56e03f00fc69e5cb762a102b0f9cc86ce85001c380bfc7329144"
+  },
+  {
+    "path": "haddock_emojis.py",
+    "sha256": "900416fded7aeb2f16c1188ea3070edfe8fe16916d834cccea55461b3a067500"
+  },
+  {
+    "path": "haddock_voice.py",
+    "sha256": "29ffbf73425513d32d4e4f62613a4dda2594abc90afd992a8b7844dfba6ce236"
+  },
+  {
+    "path": "inspect_items.py",
+    "sha256": "b047abc8ef6098f925a9f7e761500bb9e98927aa42635785c797dd9a4dcaaebf"
+  },
+  {
+    "path": "install_reminders.py",
+    "sha256": "66ef3f6a23f56eb6307633a14b79e685067d4a49bdc64fb0cf97e466f250d8f2"
+  },
+  {
+    "path": "interactive_demo.py",
+    "sha256": "3702ab79c1d2137b6255fe77265e7d2c30578e8e4e913596c5ab217941353484"
+  },
+  {
+    "path": "login-desktop.sh",
+    "sha256": "370bd7ff4cde6927ba02da5d635210ea87ea401552256deddf38b293aa328be1"
+  },
+  {
+    "path": "luna_brain.py",
+    "sha256": "aed9278afd8557c4b25b6901fd75300d7bc687a5ec6f8f86099123f0c95b86cb"
+  },
+  {
+    "path": "luna_chat.py",
+    "sha256": "a8570f58adcb60972d37feff57596ad2167961908edf7f85a0d7cb748ac09881"
+  },
+  {
+    "path": "moodle_pdf_versions.py",
+    "sha256": "dbdbdcc0db0735f88020515881d808567dfe2b78122af9f32990df02e1feeb04"
+  },
+  {
+    "path": "prepare_bot_env.py",
+    "sha256": "6afe32362b24aa92afa5915494ecdaf31521a7c82460d5c7d6324fa6b4fadb4d"
+  },
+  {
+    "path": "prepare_haddock_audio.py",
+    "sha256": "bcade3efe22be29cde674ee0e6549febf7bde84e00f1057d887729e7614dbef0"
+  },
+  {
+    "path": "preview_reminders.py",
+    "sha256": "2e34ad5332fd79225b4128b958ce2ee6cf8665b65e9f2d63903a523bbc6da127"
+  },
+  {
+    "path": "preview_status.py",
+    "sha256": "4a7af4388389b691b24a4aeae978219b3672dff0d27670f36cfaf1103883443f"
+  },
+  {
+    "path": "probe_luna_usage.py",
+    "sha256": "f92987a449a747a5c605f943334d428d9b02c4a1fc14aac017261f6777a91355"
+  },
+  {
+    "path": "probe_moodle_browser.py",
+    "sha256": "e1dd13b8524c7471779533c2977b148f3949dfafb8e687466a5c1cb06f5635d7"
+  },
+  {
+    "path": "probe_resource.py",
+    "sha256": "cd80ac73a8199bfa423997f603a15b1fff44edf96c01126145de01593d11253c"
+  },
+  {
+    "path": "publish_course_vault.py",
+    "sha256": "472d4eb761a6132a4447389ae819b8ebbf740b7f27740b48aeaa02bebc7a3d23"
+  },
+  {
+    "path": "recover_moodle_session.py",
+    "sha256": "641c649f2ca1fbe780d44ab3d833cffb4c0189453bb8c0596124ad5cd16ed936"
+  },
+  {
+    "path": "replay_easter_egg_once.py",
+    "sha256": "e254eaf7396b897b14a2114a838c1911bd380edc192f22818bb62c007c90a124"
+  },
+  {
+    "path": "requirements-bot.txt",
+    "sha256": "d852f6d2c12bc0fe4dd378cf4a421721ffd38f03ca60d3c76f7704d163da673d"
+  },
+  {
+    "path": "requirements-documents.lock",
+    "sha256": "6b9d3af92e9bdb2317e9ac845c8349f4b6a44b7d05e628ea717938589b583fc2"
+  },
+  {
+    "path": "requirements-translation.lock",
+    "sha256": "5714235642c9dc5f5eb5c8077a6f08f0539cb7869bbfcdb070c4d614fe6f0818"
+  },
+  {
+    "path": "requirements.lock",
+    "sha256": "6ac1bc07c20dafb8ab57fab374d693aafc5b43e0341bcbc66877ef098a246d38"
+  },
+  {
+    "path": "review_existing_translations.py",
+    "sha256": "da76bab65fd5306d3c82b98b6b2e55cb1624a8bb74afdfad898a36a4d491f2fd"
+  },
+  {
+    "path": "send_esn_current_test.py",
+    "sha256": "132fb7bb3bb96b64d516c5fa764a038ba52dd72bc6542ee0dce31a17296a07cb"
+  },
+  {
+    "path": "send_voice_demo.py",
+    "sha256": "a30924bc45c3b4188d96a744367b65de797a9f7d20fe2ff18153ca7a393deb06"
+  },
+  {
+    "path": "smoke_luna.py",
+    "sha256": "2b34b916e86ee50cd88d4801a8e130568aa79c0ac68c77eb9d1b3de339b77445"
+  },
+  {
+    "path": "smoke_luna_punch.py",
+    "sha256": "91d0b49bbb347a68563ecb947c883985e8574e03f158a79be21754ba6e5cf903"
+  },
+  {
+    "path": "smoke_luna_repartie.py",
+    "sha256": "27ceacf4ca37cb308a745b43430bfcb38c0d4aa81c1c092e83524c18566b39d4"
+  },
+  {
+    "path": "test_course_bot.py",
+    "sha256": "7365beaef638c87ced9c7f64aa60d896fddddd36e81ea517eee4eb9229816372"
+  },
+  {
+    "path": "test_course_health.py",
+    "sha256": "43a8130dc40ddf231eea447916c4abf0306c91cd45bd3417b84c859b152e264a"
+  },
+  {
+    "path": "test_course_tasks.py",
+    "sha256": "74378ab225396ab206a32e0136cc418f19e8fa380f77d48f00d7d7f3365ccebe"
+  },
+  {
+    "path": "test_course_translation.py",
+    "sha256": "d9fef52cea68c0d7a5922e81c24d2ae1736bd9a346fed631291a7d7704505d58"
+  },
+  {
+    "path": "test_discord_presentation.py",
+    "sha256": "69a9c735e7fa1c7bd63180ed92c14ea8c9307427a3145d1d813d2485631683b2"
+  },
+  {
+    "path": "test_haddock_easter_egg.py",
+    "sha256": "318896eda540cd16c98d75218bf4de58eb3a5e9ca12b8b9a7126585447d2bdd0"
+  },
+  {
+    "path": "test_haddock_emojis.py",
+    "sha256": "ffa537bb513bac61aae889eb72564fea7beb32a9b07021a616ff4ae837e9acb3"
+  },
+  {
+    "path": "test_haddock_voice.py",
+    "sha256": "b79bce043f422f1fd293fe782fd34f33ea45a372606adc36a194cb1c8e2f2705"
+  },
+  {
+    "path": "test_luna_brain.py",
+    "sha256": "3e3568c7d8f4606a6fb32377491a855a3bfebc0f5f7ca9b44ae7d1c8fe8ca52c"
+  },
+  {
+    "path": "test_luna_chat.py",
+    "sha256": "d4cd328c73fc7f7ca47104e6f2f9f3d9c8a3b662ce2f34e730f4e82d5f6d9e7c"
+  },
+  {
+    "path": "test_moodle_pdf_versions.py",
+    "sha256": "c35206b2992ecf08ac038d04c855a3d28bcaf4d5903b4ea6bf5ba204e75787a3"
+  },
+  {
+    "path": "test_reminders.py",
+    "sha256": "97e45e68b822e0cca20cea9d178be480695165866eb57dc14cea3951817499c9"
+  },
+  {
+    "path": "test_state.py",
+    "sha256": "aff201c853ead7caaea9a36bfb3cf1a87be02e09eefd23b7066aaa8a654cfe6b"
+  },
+  {
+    "path": "translate_worker.py",
+    "sha256": "68eb16acdbd06db065659e93e9723e5a1c5f2eb75e23824eb7379a3e5d4ce1ca"
+  },
+  {
+    "path": "upgrade_brief_embeds.py",
+    "sha256": "0c8553557957a73284ab62854c7329bb8763c6e2646dba9205b36b2acd984e19"
+  },
+  {
+    "path": "upgrade_haddock_embeds.py",
+    "sha256": "22828442c3a5e1941cb0a9b3780e73c376cca538740e70a6537559fbb5071a9d"
+  },
+  {
+    "path": "upgrade_translated_messages.py",
+    "sha256": "07753068ef5f7e1aed8b53a5e33a8bf1ac024cc6081652d6f24bce499df6b62e"
+  },
+  {
+    "path": "verify_bot_live.py",
+    "sha256": "51e346782356ae39e1b0475c8b9477a26970a940708965c7c2dea94b6fcb5026"
+  },
+  {
+    "path": "verify_translation_runtime.py",
+    "sha256": "14b04b52117079a0f937d9e74d38dfecc06e2351b59d06bc17444d2abbe8c23b"
+  },
+  {
+    "path": "assets/haddock-audio/abordage.ogg",
+    "sha256": "99907028859c0b7d29c38ff4021aaeccc721e6ff2556ceb560abd83d4f2d0e30"
+  },
+  {
+    "path": "assets/haddock-audio/bachi_bouzouk.ogg",
+    "sha256": "a24ba627672c8e16e5d6fe8670dc005614387d0df95cf7598c167e911028730a"
+  },
+  {
+    "path": "assets/haddock-audio/cafe.ogg",
+    "sha256": "c553c10f3e77a54360ca9a6907bdb239673f0f5064f2ddaa7febe725fd6335dd"
+  },
+  {
+    "path": "assets/haddock-audio/manifest.json",
+    "sha256": "5b705ecaaa2a58c630b8dbf256576fb5e1b947a4c90d5d28f1254b14c4732d9b"
+  },
+  {
+    "path": "assets/haddock-audio/parachute.ogg",
+    "sha256": "a5321ec2ac316d3e2f3de617f8545a0dac2e672c5e777a940a0dfb9bb788083b"
+  },
+  {
+    "path": "assets/haddock-audio/scolopendres.ogg",
+    "sha256": "6546dd1956de91c63dc35de3f9b695f800d4d0ae4bf953630db7a8ba2b6adbb6"
+  },
+  {
+    "path": "systemd/cours-watch-bot.service",
+    "sha256": "d367bda41415c52f1ca7b5ebcfff7e471b2f867d4f50e50195b8a4b18d98da3f"
+  },
+  {
+    "path": "systemd/cours-watch-bot.service.d/obsidian-export.conf",
+    "sha256": "a000d10a27bda89903026d1d6238afc5076f4770d0b0d2bd70ec9c07f1cd3011"
+  },
+  {
+    "path": "systemd/cours-watch-esn.service",
+    "sha256": "3d56e06af865e42ad68182950cfb9ba086ffc402a67d2d0601dfb85c0553067f"
+  },
+  {
+    "path": "systemd/cours-watch-esn.timer",
+    "sha256": "54f56dce1514411b361aadfa579eacb9940f3c6e50c58a4c855b27ce28491f5d"
+  },
+  {
+    "path": "systemd/cours-watch-login.service",
+    "sha256": "f8cef78d5f3288ffc3b331dc4e55377c15e9023ca7ff1f47e1e17c35760527dd"
+  },
+  {
+    "path": "systemd/cours-watch-obsidian.path",
+    "sha256": "7786c7f3e636c761f4db0416cb5b3056d8d44ac57d1ee02c99d98a5b5563c2cd"
+  },
+  {
+    "path": "systemd/cours-watch-obsidian.service",
+    "sha256": "586b4a722f5fec95d2de8192036b4ccd69cdcfaa7e339bc540be91e2446dac15"
+  },
+  {
+    "path": "systemd/cours-watch-session.service",
+    "sha256": "5411a250e95fb496089fadd49e4b415830d6ba8de68dce76df59edfbc60b2e16"
+  },
+  {
+    "path": "systemd/cours-watch-session.timer",
+    "sha256": "693cf347ba304ba26502f90495012b092d722c421b228df6d4faf43eb7b39e2e"
+  },
+  {
+    "path": "systemd/cours-watch.service",
+    "sha256": "490cbba850cc4edb7b72088a36f4552b16bc5276e6781f400a02d146cc6c3c4d"
+  },
+  {
+    "path": "systemd/cours-watch.service.d/obsidian-export.conf",
+    "sha256": "a000d10a27bda89903026d1d6238afc5076f4770d0b0d2bd70ec9c07f1cd3011"
+  },
+  {
+    "path": "systemd/cours-watch.timer",
+    "sha256": "bd6ea2e8658b2d9f24ab8359e53ec66ca16da238435865cdecf137a065f3e93e"
+  }
+]

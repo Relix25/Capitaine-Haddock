@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "python": "/opt/cours-watch/translation-venv/bin/python",
+  "worker": "/opt/cours-watch/translate_worker.py",
+  "models": "/opt/cours-watch/models",
+  "timeout_seconds": 180
+}
