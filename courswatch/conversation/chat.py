@@ -16,6 +16,7 @@ from courswatch.models import stamp
 from courswatch.conversation.easter_egg import triggered
 from courswatch.conversation.voice import send_voice_message, VoiceMessageError
 from courswatch.conversation.metrics import MeasuredResult, footer, local_metrics, reply_with_footer
+from courswatch.conversation.models import MODEL_CHOICES, effective_settings, save_selection
 from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, addressed,
                         BudgetExhausted, LunaError, BUDGET_REPLY, OFFLINE_REPLY,
                         REPHRASE_REPLY, REFUSAL_REPLY, RESPONSE_ERRORS, safe_text)
@@ -24,7 +25,8 @@ from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, a
 class LunaChat:
     def __init__(self,bot,data,settings,config_loader):
         self.bot,self.data,self.config_loader = bot,data,config_loader
-        self.brain = LunaBrain(data,settings)
+        self.brain = LunaBrain(data,effective_settings(data,settings))
+        self.model_lock = asyncio.Lock()
         self.memory,self.cadence = ChatMemory(),ChatCadence()
         self.pending_direct = self.pending_ambient = None
         self.task = None
@@ -32,6 +34,23 @@ class LunaChat:
         self.sequence = 0
         self.retry_after = 0
         self.clock, self.sleep = time.monotonic, asyncio.sleep
+
+    async def switch_model(self, selection):
+        if self.brain.provider != 'commandcode' or selection not in MODEL_CHOICES:
+            raise ValueError('Unsupported model selection')
+        # Let an in-flight response finish under its original model/privacy policy.
+        async with self.model_lock:
+            await asyncio.to_thread(save_selection, self.data, selection)
+            profile = MODEL_CHOICES[selection]
+            self.brain.config = {**self.brain.config, **profile}
+            self.brain.model = profile['model']
+            self.brain.require_zdr = profile['require_zdr']
+            self.retry_after = 0
+            try:
+                await asyncio.to_thread(self.brain.publish,
+                    'daily_limit' if self.brain.budget.snapshot()['blocked'] else 'ready')
+            except (OSError, sqlite3.Error):
+                pass
 
     def accept(self,message,mentioned):
         # Caller already enforces guild, channel, role, human and non-webhook checks.
@@ -147,8 +166,9 @@ class LunaChat:
                             facts = await self.facts() if direct else ''
                             started = self.clock()
                             try:
-                                decision = await asyncio.to_thread(self.brain.decide,self.memory.context(),direct,
-                                                                   self.bot.voice_samples,facts)
+                                async with self.model_lock:
+                                    decision = await asyncio.to_thread(self.brain.decide,self.memory.context(),direct,
+                                                                       self.bot.voice_samples,facts)
                             finally:
                                 timing['model_ms'] = round(max(0,self.clock()-started)*1000,1)
                     except BudgetExhausted:

@@ -141,7 +141,7 @@ def footer(metrics, local_response=False):
     labels = {'deepseek/deepseek-v4.1-flash': 'DeepSeek V4.1 Flash',
               'deepseek/deepseek-v4.1-flash-fast': 'DeepSeek V4.1 Flash Fast',
               'deepseek/deepseek-v4.1-flash-ultrafast': 'DeepSeek V4.1 Flash Ultrafast',
-              'gpt-6-luna': 'GPT-6 Luna'}
+              'gpt-6-luna': 'GPT-6 Luna', 'tencent/hy4-flash': 'Tencent HY4 Flash'}
     name = labels.get(metrics.get('model'), 'Local' if local_response else 'IA')
     parts = [name, 'TTFT ' + _seconds(metrics.get('ttft_ms')),
              'Total IA ' + _seconds(metrics.get('api_ms'))]

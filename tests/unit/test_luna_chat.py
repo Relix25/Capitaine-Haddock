@@ -30,6 +30,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat = LunaChat.__new__(LunaChat)
         chat.bot,chat.data,chat.config_loader = bot,Path('/no-access'),lambda:{}
         chat.brain = SimpleNamespace(decide=MagicMock(return_value={'action':'text','reply':'À bord !','sample_id':'none'}))
+        chat.model_lock = asyncio.Lock()
         chat.memory,chat.cadence = ChatMemory(),ChatCadence()
         chat.pending_direct = chat.pending_ambient = chat.task = None
         chat.closed,chat.sequence = False,0
@@ -251,7 +252,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             await bot.on_message(self.message())
             bot.luna.accept.assert_called_once()
             self.assertEqual({c.name for c in bot.tree.get_commands(guild=bot.scope)},
-                             {'a-faire','cours','actualiser','status'})
+                             {'a-faire','cours','actualiser','status','modele'})
             await bot.close()
 
     async def test_meaningful_text_is_not_randomly_replaced_with_audio(self):

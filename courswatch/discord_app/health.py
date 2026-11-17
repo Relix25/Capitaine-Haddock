@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from courswatch.reminders import reminder_events
 from courswatch.discord_app.emojis import icon, image_url
 from courswatch.conversation.brain import usage_totals
+from courswatch.conversation.models import effective_settings
 
 TZ = ZoneInfo('Europe/Bucharest')
 UNITS = ['cours-watch-bot.service','cours-watch.service','cours-watch.timer','cours-watch-session.timer','cours-watch-session.service','cours-watch-esn.timer','cours-watch-esn.service']
@@ -175,7 +176,7 @@ def build_status_snapshot(data_dir, config, bot_ready, latency, manual_running=F
         issues.append('Rappel du jour non confirmé')
     next_check = instant(timer.get('NextElapseUSecRealtime')) if automatic else None
     luna = {}
-    luna_config = config.get('discord',{}).get('luna',{})
+    luna_config = effective_settings(data_dir,config.get('discord',{}).get('luna',{}))
     if luna_config.get('enabled'):
         luna = read_json(data_dir / 'reports/luna-status.json')
         provider = luna_config.get('provider','openai')

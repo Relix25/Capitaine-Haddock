@@ -5,6 +5,7 @@ import subprocess
 import urllib.request
 from cours_watch import load_discord_secrets
 from luna_brain import PERSONA_VERSION
+from courswatch.conversation.models import effective_settings
 
 def main():
     config = json.loads(Path('/etc/cours-watch/config.json').read_text())['discord']
@@ -23,7 +24,7 @@ def main():
 
     commands = get('/applications/' + config['application_id'] + '/guilds/' + config['guild_id'] + '/commands')
     names = {command['name'] for command in commands}
-    if not {'cours','actualiser','status','a-faire'} <= names:
+    if not {'cours','actualiser','status','a-faire','modele'} <= names:
         raise SystemExit('Expected live commands are missing')
     message = get('/channels/' + config['channel_id'] + '/messages/1570230953404665994')
     buttons = [button for row in message.get('components',[]) for button in row.get('components',[])]
@@ -55,7 +56,7 @@ def main():
              'last_easter_egg':status.get('last_easter_egg'),'voice_enabled':status.get('voice_enabled'),
              'voice_samples':status.get('voice_samples'),'voice_probability':status.get('voice_probability')}
     if config.get('luna',{}).get('enabled'):
-        settings = config['luna']
+        settings = effective_settings('/var/lib/cours-watch',config['luna'])
         provider = settings.get('provider','openai')
         default_model = 'deepseek/deepseek-v4.1-flash' if provider == 'commandcode' else 'gpt-6-luna'
         luna = json.loads(Path('/var/lib/cours-watch/reports/luna-status.json').read_text())
@@ -63,9 +64,10 @@ def main():
                 or status.get('luna_provider','openai') != provider or luna.get('provider','openai') != provider
                 or status.get('luna_persona') != PERSONA_VERSION or luna.get('persona_version') != PERSONA_VERSION
                 or luna.get('daily_token_limit') != settings.get('daily_token_limit',1_000_000)
+                or luna.get('require_zdr',True) != settings.get('require_zdr',True)
                 or luna.get('status') not in ('ready','daily_limit')):
             raise SystemExit('Luna conversation mode or daily token ceiling is not ready')
-        proof.update(luna_enabled=True,luna_provider=provider,luna_model=status['luna_model'],luna_daily_token_limit=luna['daily_token_limit'],
+        proof.update(luna_enabled=True,luna_provider=provider,luna_model=status['luna_model'],luna_require_zdr=luna['require_zdr'],luna_daily_token_limit=luna['daily_token_limit'],
                      luna_status=luna['status'],luna_used_tokens=luna['used_tokens'],luna_persona=status['luna_persona'])
     output = Path('/tmp/cours-watch-bot-proof.json')
     output.write_text(json.dumps(proof,ensure_ascii=False,indent=2))

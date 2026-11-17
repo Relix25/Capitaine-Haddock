@@ -248,13 +248,16 @@ class LunaBrain:
         self.endpoint = profile['endpoint']
         self.key = read_api_key(key_name=profile['key_name']) if api_key is None else api_key
         self.model = config.get('model',profile['model'])
+        self.require_zdr = config.get('require_zdr', True)
+        if not isinstance(self.require_zdr, bool):
+            raise ValueError('require_zdr must be a boolean')
         self.persona_version = PERSONA_VERSION
         self.budget = TokenBudget(self.data / 'luna-usage.db',config.get('daily_token_limit',1_000_000),now=now)
         self.transport = transport or self.request
         self.publish(('daily_limit' if self.budget.snapshot()['blocked'] else 'ready') if self.key else 'missing_key')
 
     def publish(self,status,error_code=None,outcome=None):
-        report = {**self.budget.snapshot(),'provider':self.provider,'model':self.model,'persona_version':self.persona_version,'status':status,
+        report = {**self.budget.snapshot(),'provider':self.provider,'model':self.model,'require_zdr':self.require_zdr,'persona_version':self.persona_version,'status':status,
                   'checked_utc':datetime.now(timezone.utc).isoformat(timespec='seconds')}
         if error_code:
             report['error_code'] = error_code
@@ -269,7 +272,7 @@ class LunaBrain:
 
     def request(self,payload):
         headers = {'Authorization':'Bearer ' + self.key,'Content-Type':'application/json','User-Agent':'UPBCourseWatch/1.0'}
-        if self.provider == 'commandcode':
+        if self.provider == 'commandcode' and self.require_zdr:
             headers['x-cmd-zdr'] = '1'
         request = urllib.request.Request(self.endpoint,
             data=json.dumps({**payload,'stream':True},ensure_ascii=False).encode(),method='POST',

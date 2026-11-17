@@ -10,10 +10,13 @@ Bot Discord personnel pour les cours UPB et les activités ESN Bucarest, exécut
 | `/cours [cours]` | Projets et échéances à venir, avec détails privés. |
 | `/actualiser` | Relire Moodle et Teams, publier les changements puis afficher un point privé. |
 | `/status` | Santé des sources et du bot, prochains passages, annonces acceptées par Discord et consommation du modèle. |
+| `/modele [choix]` | Administrateurs : afficher le modèle actif ou choisir HY4 Flash / DeepSeek V4.1 Flash. Choix persistant, sans redémarrage. |
 
 Les commandes exigent le rôle UPB dans le salon configuré. Leurs réponses sont éphémères et ne pingent personne. `passees: vrai` ajoute les échéances antérieures après les dates à venir, avec la mention « rendu personnel à vérifier ». Le bot ne connaît pas les dépôts ni les passages à l'oral personnels. Les dates non validées sont placées en fin de liste. Les filtres acceptés sont `tous`, `AAIT`, `AITDM`, `Big Data` et `SOS`.
 
-Pour discuter, adresser un message à Haddock, le mentionner ou répondre à l'un de ses messages. Le fournisseur configuré est **CommandCode**, modèle **DeepSeek V4.1 Flash**, avec un plafond du bot de **10 millions de tokens par jour**, remis à zéro à minuit à Bucarest. Le contexte reste court et en RAM ; le compteur conserve seulement les métadonnées de consommation.
+Pour discuter, adresser un message à Haddock, le mentionner ou répondre à l'un de ses messages. Le fournisseur est **CommandCode**, modèle sélectionné **Tencent HY4 Flash**, avec un plafond du bot de **10 millions de tokens par jour**, remis à zéro à minuit à Bucarest. Le contexte reste court et en RAM ; le compteur conserve seulement les métadonnées de consommation.
+
+`/modele choix:hy4` sélectionne HY4 Flash ; `/modele choix:deepseek` revient à DeepSeek V4.1 Flash. La commande exige aussi les droits administrateur, répond en privé et indique la politique ZDR. HY4 n'a pas de route ZDR disponible lors des essais : son profil n'exige pas ZDR. DeepSeek l'exige. Les deux gardent `store: false`. Le choix est enregistré sans secret dans `/var/lib/cours-watch/model-selection.json`, indépendamment de la configuration privée ; les quotas et la mémoire RAM sont conservés. Une réponse en cours termine avant le changement. Voir [le fonctionnement et le déploiement](docs/HY4-SWITCH-2026-11-17.md).
 
 La façon de parler provient du [prompt adapté du texte fourni par l'utilisateur](courswatch/conversation/prompt-haddock.txt) : paroles seules dans le ton du capitaine, sans mimiques, gestes ou narration. [persona.py](courswatch/conversation/persona.py) ajoute le contrat technique Discord : décisions JSON, audience autorisée, secrets et faits de cours. Les préférences de langage, par exemple `/jurons rares`, se demandent dans la conversation adressée au bot ; elles n'ajoutent pas de nouvelles commandes slash Discord.
 
