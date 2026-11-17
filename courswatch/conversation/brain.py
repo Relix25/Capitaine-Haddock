@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from zoneinfo import ZoneInfo
 from courswatch.conversation.persona import PERSONA_VERSION, PROMPT
+from courswatch.conversation.metrics import MeasuredResult, local_metrics, read_model_response, response_metrics
 
 TZ = ZoneInfo('Europe/Bucharest')
 BUDGET_REPLY = 'Mille sabords ! J’ai englouti ma ration de mots pour aujourd’hui. Le capitaine est en cale sèche jusqu’à minuit, heure de Bucarest !'
@@ -41,9 +42,10 @@ class BudgetExhausted(RuntimeError):
 
 
 class LunaError(RuntimeError):
-    def __init__(self,code):
+    def __init__(self,code,metrics=None):
         super().__init__(code)
         self.code = code
+        self.metrics = dict(metrics or {})
 
 
 def parse_decision(response,identifiers):
@@ -270,11 +272,12 @@ class LunaBrain:
         if self.provider == 'commandcode':
             headers['x-cmd-zdr'] = '1'
         request = urllib.request.Request(self.endpoint,
-            data=json.dumps(payload,ensure_ascii=False).encode(),method='POST',
+            data=json.dumps({**payload,'stream':True},ensure_ascii=False).encode(),method='POST',
             headers=headers)
+        started = time.perf_counter()
         try:
             with urllib.request.urlopen(request,timeout=30) as response:
-                return json.load(response)
+                return read_model_response(response,started)
         except urllib.error.HTTPError as error:
             raise LunaError('http_' + str(error.code)) from None
         except (OSError,ValueError):
@@ -282,7 +285,7 @@ class LunaBrain:
 
     def decide(self,context,direct,samples=(),facts=''):
         if not self.key:
-            raise LunaError('missing_key')
+            raise LunaError('missing_key',local_metrics())
         identifiers = ['none'] + [sample.id for sample in samples]
         schema = {'type':'object','properties':{'action':{'type':'string','enum':['ignore','text','sample']},
             'reply':{'type':'string'},'sample_id':{'type':'string','enum':identifiers}},
@@ -301,17 +304,22 @@ class LunaBrain:
         except BudgetExhausted:
             self.publish('daily_limit')
             raise
+        started = time.perf_counter()
         try:
             response = self.transport(payload)
         except LunaError as error:
             known_unbilled = error.code in ('http_400','http_401','http_402','http_403','http_404','http_422','http_429')
+            error.metrics = {'model':self.model,'api_ms':(time.perf_counter()-started)*1000,
+                             'ttft_ms':None,'total_tokens':0 if known_unbilled else None}
             self.budget.settle(reservation,status=error.code,known_usage=known_unbilled)
             self.publish('error',error.code)
             raise
         except Exception:
             self.budget.settle(reservation,status='unknown_error',known_usage=False)
             self.publish('error','unknown_error')
-            raise LunaError('unknown_error') from None
+            raise LunaError('unknown_error',{'model':self.model,'ttft_ms':None,
+                'api_ms':(time.perf_counter()-started)*1000,'total_tokens':None}) from None
+        metrics = response_metrics(response,self.model,(time.perf_counter()-started)*1000)
         usage = response.get('usage') or {}
         self.budget.settle(reservation,usage.get('input_tokens',0),usage.get('output_tokens',0),
             known_usage='input_tokens' in usage and 'output_tokens' in usage,
@@ -320,6 +328,7 @@ class LunaBrain:
         try:
             decision = parse_decision(response,identifiers)
         except LunaError as error:
+            error.metrics = metrics
             if error.code == 'model_refusal':
                 self.publish('ready',outcome='model_refusal')
             else:
@@ -327,6 +336,6 @@ class LunaBrain:
             raise
         except (ValueError,KeyError,TypeError,AttributeError):
             self.publish('degraded','invalid_response')
-            raise LunaError('invalid_response') from None
+            raise LunaError('invalid_response',metrics) from None
         self.publish('ready')
-        return decision
+        return MeasuredResult(decision,metrics)

@@ -17,6 +17,8 @@ Pour discuter, adresser un message à Haddock, le mentionner ou répondre à l'u
 
 La façon de parler provient du [prompt adapté du texte fourni par l'utilisateur](courswatch/conversation/prompt-haddock.txt) : paroles seules dans le ton du capitaine, sans mimiques, gestes ou narration. [persona.py](courswatch/conversation/persona.py) ajoute le contrat technique Discord : décisions JSON, audience autorisée, secrets et faits de cours. Les préférences de langage, par exemple `/jurons rares`, se demandent dans la conversation adressée au bot ; elles n'ajoutent pas de nouvelles commandes slash Discord.
 
+Les réponses du chatbot affichent un sous-texte avec le modèle, le TTFT, le temps total de l'appel IA, le débit de sortie estimé et les tokens d'entrée/sortie, dont le cache connu. Ces chiffres sont mesurés par le code pour chaque appel ; ils ne viennent pas du modèle et ne sont pas réinjectés dans le contexte. Une mesure absente est indiquée comme indisponible. Pour un sample vocal, Discord impose un court message de statistiques séparé en réponse à l'audio.
+
 ## Fonctions suivies
 
 - Moodle et publications/réponses effectivement chargées dans Général des quatre équipes Teams ; Administrativ exclu.

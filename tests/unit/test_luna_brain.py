@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from luna_brain import (TokenBudget, LunaBrain, BudgetExhausted, LunaError,
                         ChatMemory, ChatCadence, addressed, safe_text, read_api_key)
 from courswatch.conversation.persona import PERSONA_TEXT, DISCORD_CONTRACT, PERSONA_VERSION
+from courswatch.conversation.metrics import read_model_response
 
 
 def response(action='text',reply='À bord, camarade !',sample='none',usage=(100,20)):
@@ -133,6 +134,37 @@ class LunaTests(unittest.TestCase):
         self.assertEqual(error.exception.code,'missing_key')
         transport.assert_not_called()
         self.assertEqual(brain.budget.snapshot()['calls'],0)
+
+    def test_streaming_request_exposes_measured_stats_without_changing_decision_schema(self):
+        final=response(usage=(100,21))
+        final['usage'].update(total_tokens=121,input_tokens_details={'cached_tokens':80})
+        raw=b'data: '+json.dumps({'type':'response.output_text.delta','delta':'{'}).encode()+b'\n\n'
+        raw+=b'data: '+json.dumps({'type':'response.completed','response':final}).encode()+b'\n\n'
+        def measured(stream,started):
+            times=iter((started+.2,started+.7))
+            return read_model_response(stream,started,clock=lambda:next(times))
+        brain=LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
+        with patch('luna_brain.urllib.request.urlopen',return_value=io.BytesIO(raw)) as send, \
+             patch('luna_brain.read_model_response',side_effect=measured):
+            decision=brain.decide([],True)
+        self.assertTrue(json.loads(send.call_args.args[0].data)['stream'])
+        self.assertEqual(set(decision),{'action','reply','sample_id'})
+        self.assertAlmostEqual(decision.metrics['ttft_ms'],200,places=3)
+        self.assertAlmostEqual(decision.metrics['api_ms'],700,places=3)
+        self.assertAlmostEqual(decision.metrics['output_tps'],40,places=3)
+        self.assertEqual(decision.metrics['total_tokens'],121)
+        self.assertEqual(brain.budget.snapshot()['used_tokens'],121)
+        self.assertEqual(brain.budget.snapshot()['reserved_tokens'],0)
+
+    def test_incomplete_stream_keeps_confirmed_tokens_on_the_local_fallback_error(self):
+        final=dict(response(usage=(100,7)),status='incomplete',incomplete_details={'reason':'max_output_tokens'})
+        raw=b'data: '+json.dumps({'type':'response.incomplete','response':final}).encode()+b'\n\n'
+        brain=LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
+        with patch('luna_brain.urllib.request.urlopen',return_value=io.BytesIO(raw)):
+            with self.assertRaises(LunaError) as error:brain.decide([],True)
+        self.assertEqual(error.exception.code,'output_limit')
+        self.assertEqual(error.exception.metrics['total_tokens'],107)
+        self.assertEqual(brain.budget.snapshot()['used_tokens'],107)
 
     def test_key_reader_selects_only_the_requested_private_env_entry(self):
         env = self.root/'synthetic.env'

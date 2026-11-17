@@ -15,6 +15,7 @@ from courswatch.discord_app.ui_data import current_events
 from courswatch.models import stamp
 from courswatch.conversation.easter_egg import triggered
 from courswatch.conversation.voice import send_voice_message, VoiceMessageError
+from courswatch.conversation.metrics import MeasuredResult, footer, local_metrics, reply_with_footer
 from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, addressed,
                         BudgetExhausted, LunaError, BUDGET_REPLY, OFFLINE_REPLY,
                         REPHRASE_REPLY, REFUSAL_REPLY, RESPONSE_ERRORS, safe_text)
@@ -139,7 +140,7 @@ class LunaChat:
                 try:
                     if self.clock() < self.retry_after:
                         if direct:
-                            await deliver({'action':'text','reply':OFFLINE_REPLY,'sample_id':'none'},True,False)
+                            await deliver(MeasuredResult({'action':'text','reply':OFFLINE_REPLY,'sample_id':'none'},local_metrics()),True,False)
                         continue
                     try:
                         async with self.typing(message,direct):
@@ -152,7 +153,7 @@ class LunaChat:
                                 timing['model_ms'] = round(max(0,self.clock()-started)*1000,1)
                     except BudgetExhausted:
                         if direct or self.brain.budget.first_notice():
-                            await deliver({'action':'text','reply':BUDGET_REPLY,'sample_id':'none'},direct,False)
+                            await deliver(MeasuredResult({'action':'text','reply':BUDGET_REPLY,'sample_id':'none'},local_metrics()),direct,False)
                         continue
                     except LunaError as error:
                         response_problem = error.code in RESPONSE_ERRORS
@@ -162,11 +163,15 @@ class LunaChat:
                             'scope':'message' if response_problem else 'service'})
                         if direct:
                             fallback = (REFUSAL_REPLY if error.code == 'model_refusal' else REPHRASE_REPLY) if response_problem else OFFLINE_REPLY
-                            await deliver({'action':'text','reply':fallback,'sample_id':'none'},True,False)
+                            await deliver(MeasuredResult({'action':'text','reply':fallback,'sample_id':'none'},error.metrics),True,False)
                         continue
                     # A direct message arriving during ambient analysis takes precedence over the joke.
                     if not direct and self.pending_direct:
                         continue
+                    metrics = getattr(decision,'metrics',{})
+                    for key in ('ttft_ms','api_ms','input_tokens','output_tokens','total_tokens','cached_input_tokens','output_tps'):
+                        if isinstance(metrics.get(key),(int,float)):
+                            timing[key] = round(metrics[key],2)
                     if decision['action'] != 'ignore':
                         await deliver(decision,direct)
                 finally:
@@ -178,6 +183,9 @@ class LunaChat:
             self.bot.write_status(last_luna_callback_error={'error_type':type(error).__name__,'checked_utc':stamp()})
 
     async def deliver(self,message,decision,direct,conversation=True):
+        metrics = getattr(decision,'metrics',{})
+        if not metrics and not conversation:
+            metrics = local_metrics()
         sample = next((sample for sample in self.bot.voice_samples if sample.id == decision['sample_id']),None)
         reply_id,format_used = None,'text'
         if (decision['action'] == 'sample' and sample and sample.id != self.bot.last_voice_sample
@@ -191,12 +199,22 @@ class LunaChat:
                 self.bot.write_status(last_voice_error={'error_type':type(error).__name__,'checked_utc':stamp()})
         if reply_id is None:
             try:
-                reply = await message.reply(safe_text(decision['reply']),mention_author=False,
+                content = reply_with_footer(safe_text(decision['reply']),metrics,local_response=not conversation)
+                reply = await message.reply(content,mention_author=False,
                                             allowed_mentions=discord.AllowedMentions.none())
                 reply_id = reply.id
             except discord.HTTPException:
                 self.bot.write_status(last_luna_delivery_error=stamp())
                 return
+        else:
+            # Native Discord voice messages reject text content. Keep their
+            # measurements in a small reply to that audio, without a mention.
+            try:
+                await message.channel.send(footer(metrics,local_response=not conversation),
+                    reference=discord.MessageReference(message_id=reply_id,channel_id=message.channel.id,fail_if_not_exists=False),
+                    mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException as error:
+                self.bot.write_status(last_chat_metrics_error={'error_type':type(error).__name__,'checked_utc':stamp()})
         self.memory.add('Haddock',('[Extrait vocal : '+sample.id+']' if format_used == 'voice' else decision['reply']),
                         reply_id,is_bot=True)
         self.cadence.sent(direct,message.author.id,conversation)

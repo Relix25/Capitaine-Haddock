@@ -30,7 +30,7 @@ PROFILES = {
     "conversation": (
         "test_luna_brain", "test_luna_chat", "test_esn_watch",
         "test_haddock_voice", "test_haddock_emojis",
-        "test_haddock_easter_egg", "test_course_translation",
+        "test_haddock_easter_egg", "test_course_translation", "tests.unit.test_conversation_metrics",
     ),
     "documents": (
         "test_moodle_pdf_versions", "test_moodle_pdf_collection", "test_attachment_bindings",

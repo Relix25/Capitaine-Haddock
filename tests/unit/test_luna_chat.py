@@ -6,16 +6,18 @@ from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+import discord
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from course_bot import CourseBot
 from luna_brain import BUDGET_REPLY, BudgetExhausted, ChatMemory, ChatCadence, LunaError, OFFLINE_REPLY, REFUSAL_REPLY
 from luna_chat import LunaChat
+from courswatch.conversation.metrics import MeasuredResult
 
 
 class ChatTests(unittest.IsolatedAsyncioTestCase):
     def message(self,**changes):
-        data = dict(id=123,guild=SimpleNamespace(id=1),channel=SimpleNamespace(id=2),
+        data = dict(id=123,guild=SimpleNamespace(id=1),channel=SimpleNamespace(id=2,send=AsyncMock()),
             author=SimpleNamespace(id=4,bot=False,display_name='Camarade',roles=[SimpleNamespace(id=3)]),
             content='Haddock, tu vas bien ?',mentions=[],webhook_id=None,reference=None,
             reply=AsyncMock(return_value=SimpleNamespace(id=456)))
@@ -34,6 +36,9 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat.retry_after = 0
         chat.clock,chat.sleep = time.monotonic,asyncio.sleep
         return chat
+
+    def spoken_reply(self,message):
+        return message.reply.await_args.args[0].split('\n\n-# ',1)[0]
 
     def fast_clock(self,chat,on_sleep=None):
         clock,delays = [100.0],[]
@@ -171,7 +176,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         manager.__aexit__.assert_awaited_once()
         self.assertIs(manager.__aexit__.await_args.args[0],LunaError)
         self.assertFalse(state.active)
-        self.assertEqual(message.reply.await_args.args[0],OFFLINE_REPLY)
+        self.assertEqual(self.spoken_reply(message),OFFLINE_REPLY)
         chat.brain.decide.assert_called_once()
         await chat.close()
 
@@ -214,7 +219,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         message = self.message()
         chat.accept(message,False)
         await chat.task
-        self.assertEqual(message.reply.await_args.args[0],BUDGET_REPLY)
+        self.assertEqual(self.spoken_reply(message),BUDGET_REPLY)
         self.assertFalse(chat.cadence.followup(4))
         await chat.close()
 
@@ -275,12 +280,12 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         first,second = self.message(),self.message(id=124)
         chat.accept(first,False)
         await chat.task
-        self.assertNotEqual(first.reply.await_args.args[0],OFFLINE_REPLY)
+        self.assertNotEqual(self.spoken_reply(first),OFFLINE_REPLY)
         self.assertEqual(chat.retry_after,0)
         chat.accept(second,False)
         await chat.task
         self.assertEqual(chat.brain.decide.call_count,2)
-        self.assertEqual(second.reply.await_args.args[0],'Je t’écoute, forban.')
+        self.assertEqual(self.spoken_reply(second),'Je t’écoute, forban.')
         await chat.close()
 
     async def test_refusal_is_local_to_that_request_and_is_not_retried(self):
@@ -289,7 +294,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         message = self.message()
         chat.accept(message,False)
         await chat.task
-        self.assertEqual(message.reply.await_args.args[0],REFUSAL_REPLY)
+        self.assertEqual(self.spoken_reply(message),REFUSAL_REPLY)
         self.assertEqual(chat.brain.decide.call_count,1)
         self.assertEqual(chat.retry_after,0)
         await chat.close()
@@ -305,11 +310,45 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             await chat.deliver(message,choice,True)
             send.assert_called_once()
             message.reply.assert_not_awaited()
+            message.channel.send.assert_awaited_once()
+            self.assertEqual(message.channel.send.await_args.kwargs['reference'].message_id,987)
+            self.assertFalse(message.channel.send.await_args.kwargs['allowed_mentions'].roles)
         chat.bot.last_voice_sample = None
         with patch('luna_chat.random.random',return_value=.1), \
              patch('luna_chat.send_voice_message',side_effect=VoiceMessageError('unavailable')):
             await chat.deliver(message,choice,True)
-            self.assertEqual(message.reply.await_args.args[0],choice['reply'])
+            self.assertEqual(self.spoken_reply(message),choice['reply'])
+        await chat.close()
+
+    async def test_metrics_are_shown_but_never_return_to_model_memory(self):
+        chat=self.chat();message=self.message()
+        decision=MeasuredResult({'action':'text','reply':'Paroles du capitaine.','sample_id':'none'},
+            {'model':'deepseek/deepseek-v4.1-flash','ttft_ms':200,'api_ms':700,'total_tokens':121,
+             'input_tokens':100,'output_tokens':21,'cached_input_tokens':80,'output_tps':40})
+        await chat.deliver(message,decision,True)
+        content=message.reply.await_args.args[0]
+        self.assertIn('\n\n-# DeepSeek V4.1 Flash',content)
+        self.assertIn('TTFT 0,20 s',content)
+        self.assertIn('Total IA 0,70 s',content)
+        self.assertIn('≈ 40,0 tok/s',content)
+        self.assertIn('121 tokens',content)
+        self.assertEqual(chat.memory.context()[-1]['text'],'Paroles du capitaine.')
+        self.assertNotIn('TTFT',str(chat.memory.context()))
+        self.assertFalse(message.reply.await_args.kwargs['allowed_mentions'].roles)
+        await chat.close()
+
+    async def test_voice_footer_failure_does_not_duplicate_an_already_delivered_audio(self):
+        chat=self.chat();message=self.message()
+        chat.bot.voice_samples=[SimpleNamespace(id='cafe')]
+        message.channel.send.side_effect=discord.HTTPException(SimpleNamespace(status=500,reason='synthetic'),
+                                                               {'message':'PRIVATE_SENTINEL','code':0})
+        with patch('luna_chat.random.random',return_value=.1), \
+             patch('luna_chat.send_voice_message',return_value={'id':'987'}):
+            await chat.deliver(message,{'action':'sample','reply':'Un café récalcitrant.','sample_id':'cafe'},True)
+        message.reply.assert_not_awaited()
+        self.assertIn(987,chat.memory.bot_ids)
+        self.assertNotIn('PRIVATE_SENTINEL',str(chat.bot.write_status.call_args_list))
+        self.assertEqual(chat.bot.write_status.call_args.kwargs['last_luna_reply']['format'],'voice')
         await chat.close()
 
 
