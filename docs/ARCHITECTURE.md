@@ -77,3 +77,7 @@ Les contextes Playwright réels utilisent un client HTTP borné avec les seuls c
 Les octets d'un lot de pièces jointes sont stockés temporairement dans un dossier privé ; seules les métadonnées restent en RAM entre téléchargements. L'archivage relit un PDF à la fois, sans retéléchargement. Les correspondances dans `COURSE/bindings/` fixent le lien entre l'attachement principal et l'ancien catalogue du module. Un ancien SHA doit identifier une unique pièce jointe pour créer ce lien ; sinon le catalogue historique reste figé et les nouveaux documents utilisent leurs identités propres avec avertissement. Aucun ancien PDF ou catalogue n'est effacé.
 
 Les sessions Moodle réelles et la compatibilité des trois environnements sur Linux restent à vérifier en staging. L'outil d'audit autonome sans contexte navigateur ne resynchronise pas entre appels une éventuelle rotation de cookie ; il reste distinct du chemin de production du bot.
+
+## Validation ultérieure sur VPS — 17 novembre 2026
+
+Après autorisation, les trois environnements existants ont chargé le nouveau code, les deux modèles locaux ont été chargés et les 225 tests ont réussi sous Linux. Le lot applicatif `3d9e6d4` est installé, le bot est prêt et le rendu/pagination ont été vérifiés par un message synthétique dans le salon, sans mentions. La collecte manuelle Moodle/Teams reste non exécutée après refus d'approbation automatique ; le fonctionnement programmé initial a été rétabli. Voir [le compte rendu de déploiement](DEPLOYMENT-2026-11-17.md).

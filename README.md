@@ -35,6 +35,7 @@ Le code applicatif est regroupé dans [`courswatch/`](courswatch/). Les fichiers
 - [Préparer et vérifier un lot, modèles et rollback](docs/OPERATIONS-REFACTOR.md)
 - [Profils de tests isolés](tests/README.md)
 - [Rapport du refactoring local du 17 novembre](docs/REFACTOR-2026-11-17.md)
+- [Déploiement VPS et tests du salon du 17 novembre](docs/DEPLOYMENT-2026-11-17.md)
 - [Exemples de configuration](examples/)
 - [Historique documentaire des réglages du 12 novembre](docs/Operations-historique-2026-11-12.md)
 - [Empreintes du code exporté du VPS](docs/source-VPS-SHA256.json)
@@ -58,6 +59,12 @@ Le profil `core` conserve les 63 tests de la commande historique. `all` ajoute l
 Les anciens appels `python -m unittest test_course_tasks ...` restent compatibles. Utiliser les profils explicites pour éviter de découvrir deux fois les adaptateurs et leurs implémentations. Certains tests de liens symboliques demandent Linux ou les privilèges Windows appropriés ; les tests ignorés sont comptés dans le résultat.
 
 `scan --dry-run` effectue une vraie lecture réseau à partir d'une copie temporaire du profil dédié. Il ne modifie pas la base, le rapport ou la session d'origine et ne livre aucune notification. Ce mode n'est pas un test hors ligne ; fermer la connexion interactive et conserver le verrou de collecte. Les scripts `smoke_luna*` et `probe_luna_usage.py` restent des essais manuels payants exclus des profils.
+
+## Déploiement du 17 novembre 2026
+
+Le commit applicatif `3d9e6d4` est installé sur le VPS : 225 tests réussis sous Linux, bot actif et prêt, quatre commandes retrouvées dans Discord. Un message synthétique et sa pagination ont été vérifiés dans le salon avec zéro mention de rôle ou d'utilisateur. Les timers et le watcher ont été rétablis ; configurations et données ont été préservées.
+
+La collecte manuelle réelle Moodle/Teams reste à autoriser après refus du contrôle automatique. Elle n'est pas déclarée testée. Les limites, sauvegardes et résultats détaillés figurent dans le [compte rendu de déploiement](docs/DEPLOYMENT-2026-11-17.md).
 
 ## Historique Git
 
