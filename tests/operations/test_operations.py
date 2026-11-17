@@ -153,6 +153,8 @@ class OperationsTests(unittest.TestCase):
 
     def test_export_archives_the_same_bytes_that_were_hashed(self):
         source = self.write("source/code.py", b"original")
+        self.write("source/courswatch/conversation/prompt-haddock.txt", b"packaged prompt")
+        self.write("source/courswatch/conversation/private.txt", b"not package data")
         (self.root / "units").mkdir()
         paths = {
             "/opt/cours-watch": self.root / "source",
@@ -175,7 +177,8 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), b"changed after read")
         self.assertEqual(verified_export(paths["/tmp/capitaine-source-20261117.tar.gz"],
                                          paths["/tmp/capitaine-source-20261117-manifest.json"]),
-                         {"code.py": b"original"})
+                         {"code.py": b"original",
+                          "courswatch/conversation/prompt-haddock.txt": b"packaged prompt"})
 
     def test_export_rejects_missing_extra_or_unsafe_members(self):
         manifest = self.write("manifest.json", b"[]")

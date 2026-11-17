@@ -90,3 +90,24 @@ Le transport conserve son timeout réseau et une garde de durée pendant la lect
 ## Visibilité GitHub demandée pendant la session
 
 La connexion existante rapporte `ADMIN` et permet déjà de modifier le code. Le changement explicite vers privé a été tenté par `gh api --method PATCH repos/Relix25/Capitaine-Haddock -F private=true` : HTTP 403, `Resource not accessible by integration`. Le navigateur partagé n'a pas pu démarrer. La visibilité vérifiée reste publique ; aucun accès supplémentaire ou compte n'a été créé. Ce refus concerne la permission d'administration de l'intégration, pas l'accès local au code. Aucun push n'a été effectué.
+
+## Corrections de la relecture du 18 novembre 2026
+
+- `/settings` valide le modèle, la politique et le routage avant sauvegarde. Une exigence ZDR configurée s'applique aussi à HY4. Le profil d'un tour reste figé lors d'une nouvelle tentative. La vision exige une preuve explicite pour le modèle, l'API, le JSON strict et la politique. Le diagnostic utilise le même résolveur. La vérification locale de la bascule pendant un appel a utilisé de faux transports.
+- Les versions et droits des occurrences utilisées sont vérifiés avant transmission puis avant publication. Une panne de lecture Discord suspend la dépendance et permet de la vérifier à nouveau. Le journal distingue la réponse REST autoritaire d'un événement rejoué au même instant. Le backfill réconcilie chaque page intégralement lue avec des bornes d'identifiants Discord.
+- Le coordinateur conserve les demandes distinctes et leurs auteurs. Une précision liée pertinente peut modifier l'objectif sans changer le demandeur. Les limites de rejeu partent de la date source. La télémétrie indisponible laisse le tour en file et le premier reçu inclut le temps d'ingestion.
+- La recherche borne les preuves au cours demandé, réutilise le chemin des tâches et conserve les dépendances des options de clarification. Un emoji décoratif laisse passer la recherche AAIT. « Mon GIF » prend l'auteur du tour comme filtre. Le cache conserve les occurrences distinctes et sépare date d'envoi et date d'analyse.
+- Le pipeline rejette un téléchargement ou un GIF structurellement incomplet. Le cache de traitement change de version. Les observations GIF déjà mémorisées gardent leur date et signalent que leur complétude est inconnue. Une empreinte de preuve est calculée sur l'observation rendue. Un reçu vocal illisible est comptabilisé comme incertain sans nouvelle publication.
+- Un total fournisseur confirmé suffit au règlement même sans ventilation. L'admission texte et vision partage un seul emplacement. La taille Base64 compte dans le plafond d'octets et le budget visuel utilise une provision par image. Les métriques d'une tentative écartée restent reliées à l'identifiant du compte d'appel, avec un dernier écart conservé séparément du dernier tour. Les corrections ne nécessitent pas de nouvelle migration.
+- `/actualiser` fixe le répertoire du collecteur canonique. L'export historique inclut la ressource de personnalité requise à l'import.
+
+La suite isolée de cette révision a exécuté **452 tests**, tous réussis, en 13,284 s. Commande : `work/venv/bin/python -B tools/run_tests.py all --temp-root work/corrections-regression-tmp`.
+
+Comparaison du début de `on_message` jusqu'au reçu du texte, en millisecondes. Le modèle simulé prend 80 ms et chaque opération Discord simulée 20 ms. SQLite et les diagnostics sont en mémoire. La question directe seule a 14 essais par version. La question reçue 100 ms après le début d'une attente ambiante distincte en a six. Le p95 est calculé par rang entier. Chaque essai effectue une génération et un envoi.
+
+| Scénario | f0259d7 p50 / p95 | f39e8ef p50 / p95 | Correctifs p50 / p95 |
+| --- | ---: | ---: | ---: |
+| Question directe seule | 251,47 / 255,03 | 315,47 / 326,20 | 336,64 / 347,91 |
+| Question directe pendant l'attente ambiante | 4 004,95 / 4 005,34 | 315,77 / 317,28 | 337,46 / 349,30 |
+
+Le GET membre redondant de la publication est supprimé. La vérification avant départ fournisseur porte le total à quatre GET dans le scénario corrigé, deux par phase. Les mesures sont des délais jusqu'au reçu simulé et les volumes d'essais sont limités. L'affichage dans le client Discord, le stockage sur disque, les capacités réelles des modèles et les gains en production restent à mesurer.

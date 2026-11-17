@@ -1,5 +1,6 @@
 """Acquire bounded public CDN resources, without redirects or arbitrary URLs."""
 from dataclasses import dataclass
+from http.client import IncompleteRead
 import socket
 import time
 import urllib.error
@@ -54,8 +55,11 @@ def fetch_media(descriptor, *, max_bytes=10 * 1024 * 1024, timeout=10, opener=No
             status = getattr(response, 'status', 200)
             if status is not None and status != 200:
                 raise MediaUnavailable('source_http_' + str(status))
-            length = response.headers.get('Content-Length')
-            if length and int(length) > max_bytes:
+            raw_length = response.headers.get('Content-Length')
+            length = int(raw_length) if raw_length is not None else None
+            if length is not None and length < 0:
+                raise MediaUnavailable('source_invalid_length')
+            if length is not None and length > max_bytes:
                 raise MediaUnavailable('source_too_large')
             content_type = response.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
             chunks = []
@@ -74,10 +78,14 @@ def fetch_media(descriptor, *, max_bytes=10 * 1024 * 1024, timeout=10, opener=No
     except urllib.error.HTTPError as error:
         code = 'source_expired' if error.code in (401, 403, 404) else 'source_http_' + str(error.code)
         raise MediaUnavailable(code) from None
+    except IncompleteRead:
+        raise MediaUnavailable('source_truncated') from None
     except (OSError, ValueError, socket.timeout):
         raise MediaUnavailable('source_unavailable') from None
     if len(data) > max_bytes:
         raise MediaUnavailable('source_too_large')
+    if length is not None and len(data) != length:
+        raise MediaUnavailable('source_truncated' if len(data) < length else 'source_invalid_length')
     if content_type and content_type not in ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/octet-stream'):
         raise MediaUnavailable('unsupported_content_type')
     return AcquiredMedia(data, content_type)

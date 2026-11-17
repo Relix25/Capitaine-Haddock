@@ -43,9 +43,12 @@ def _envelope(payload):
 
 
 def _semantic(envelope):
+    from courswatch.media import media_identity
+
     value = asdict(envelope)
     for key in ('received_at', 'revision', 'event_kind', 'ingestion_mode'):
         value.pop(key, None)
+    value['media'] = [media_identity(item) for item in envelope.media]
     return value
 
 
@@ -188,8 +191,9 @@ class Journal:
                 old = _envelope(row['payload'])
                 if _semantic(old) == _semantic(envelope):
                     return None
-                if backfill and state_at == row['state_at']:
-                    return None
+                if state_at == row['state_at']:
+                    if envelope.event_kind != 'rest' or utc_iso(envelope.received_at) < row['observed_at']:
+                        return None
                 if old.edited_at and not envelope.edited_at:
                     return None
                 if old.author_id != envelope.author_id:
@@ -402,11 +406,12 @@ class Journal:
             db.commit()
         return self.coverage(scope)
 
-    def reconcile_window(self, scope, start, end, seen_ids):
+    def reconcile_window(self, scope, start, end, seen_ids, *,
+                         after_message_id=None, through_message_id=None, observed_before=None):
         """Tombstone missing messages only after an authorized complete scan.
 
-        ``start``/``end`` bound message creation times. Messages observed after
-        ``end`` are protected against racing live gateway updates.
+        Times bound message creation. Page boundaries disambiguate snowflakes
+        sharing a timestamp. The scan start protects concurrent live updates.
         """
         first, last = utc_iso(start), utc_iso(end)
         seen = {str(identifier) for identifier in seen_ids}
@@ -414,11 +419,20 @@ class Journal:
             db.execute('BEGIN IMMEDIATE')
             rows = db.execute('SELECT message_id FROM messages WHERE scope=? AND deleted=0 '
                               'AND created_at>=? AND created_at<=? AND observed_at<=?',
-                              (scope.key, first, last, last)).fetchall()
+                              (scope.key, first, last, utc_iso(observed_before) if observed_before else last)).fetchall()
             count = 0
             for row in rows:
-                if row['message_id'] not in seen:
-                    count += int(self._delete_record(db, scope, row['message_id'], utc_iso(self._now())))
+                identifier = row['message_id']
+                if identifier in seen:
+                    continue
+                if after_message_id is not None or through_message_id is not None:
+                    if not identifier.isdecimal():
+                        continue
+                    if after_message_id is not None and int(identifier) <= int(after_message_id):
+                        continue
+                    if through_message_id is not None and int(identifier) > int(through_message_id):
+                        continue
+                count += int(self._delete_record(db, scope, identifier, utc_iso(self._now())))
             db.commit()
             return count
 

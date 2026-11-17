@@ -19,6 +19,7 @@ from courswatch.conversation.contracts import utc_iso
 from courswatch.media.acquisition import AcquiredMedia, MediaUnavailable, fetch_media
 from courswatch.media.decode import (DESCRIPTION_SCHEMA_VERSION, PREPROCESS_VERSION,
                                      DecodeLimits, decode_media)
+from courswatch.media.normalize import media_identity
 
 _UNSET_PROFILE = object()
 
@@ -135,7 +136,7 @@ class MediaService:
     def __init__(self, data, journal, describer=None, profile_resolver=None, *,
                  fetcher=fetch_media, decoder=decode_media, clock=time.monotonic,
                  now=time.time, limits=None, trusted_test=False, queue_size=64,
-                 max_media_per_message=4, refresh_source=None, authorize=None):
+                 max_media_per_message=4, refresh_source=None, authorize=None, authorize_dispatch=None):
         self.journal, self.describer, self.profile_resolver = journal, describer, profile_resolver
         self.fetcher, self.decoder, self.clock = fetcher, decoder, clock
         self.now = now
@@ -145,6 +146,7 @@ class MediaService:
         self.trusted_test = trusted_test
         self.refresh_source = refresh_source
         self.authorize = authorize or (lambda envelope: True)
+        self.authorize_dispatch = authorize_dispatch
         self.cache = MediaCache(Path(data) / 'media-cache.db', now=now)
         self.queue = asyncio.Queue(maxsize=queue_size)
         self.max_media = max_media_per_message
@@ -174,9 +176,10 @@ class MediaService:
 
     def _active(self, envelope, media=None):
         current = self.journal.active(envelope.scope, envelope.message_id)
+        identity = media_identity(media) if media is not None else None
         return bool(current and not current.deleted and current.revision == envelope.revision and
-                    self.authorize(current) and (media is None or
-                    any(item.media_id == media.media_id for item in current.media)))
+                    self.authorize(current) and (identity is None or
+                    any(media_identity(item) == identity for item in current.media)))
 
     def _profile_key(self, profile):
         value = {'profile': asdict(profile), 'preprocess': PREPROCESS_VERSION,
@@ -187,7 +190,7 @@ class MediaService:
     def _source_id(media):
         # Hash only as an internal acceleration key. It cannot be looked up by
         # user/API and never returns another scope's usage or signed URL.
-        return hashlib.sha256(media.url.encode()).hexdigest()
+        return hashlib.sha256(json.dumps(media_identity(media)[-1]).encode()).hexdigest()
 
     def submit(self, envelope, interactive=False):
         """Schedule silent background work. Interactive callers should await enrich.
@@ -221,7 +224,7 @@ class MediaService:
             except asyncio.QueueEmpty:
                 return
             try:
-                await self.enrich(envelope)
+                await self.enrich(envelope, interactive=False)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -293,7 +296,7 @@ class MediaService:
                 return observation
         return None
 
-    async def enrich(self, envelope, profile=_UNSET_PROFILE, *, refresh=False):
+    async def enrich(self, envelope, profile=_UNSET_PROFILE, *, refresh=False, interactive=True):
         """Return observations for active media; no participation/publication here.
 
         An existing observation remains a dated observation even after model
@@ -328,7 +331,7 @@ class MediaService:
                   (not self.trusted_test and not vision_available(profile))):
                 observation = self._observation(envelope, media, 'unsupported', reason='capability_unavailable', profile=profile)
             else:
-                observation = await self._enrich_one(envelope, media, profile)
+                observation = await self._enrich_one(envelope, media, profile, interactive)
             if prior and observation['status'] in ('source_unavailable', 'failed', 'unsupported', 'deferred_budget'):
                 # A failed recheck doesn't erase a useful authorized memory or
                 # pretend its old details have just been visually reverified.
@@ -340,7 +343,26 @@ class MediaService:
                 output.append(observation)
         return tuple(output)
 
-    async def _enrich_one(self, envelope, media, profile):
+    async def _shared_result(self, jobs, key, work, is_active):
+        joined = key in jobs
+        while True:
+            task = jobs.get(key)
+            if task is None:
+                task = jobs[key] = asyncio.create_task(work())
+            try:
+                return await asyncio.shield(task)
+            except MediaUnavailable as error:
+                # A shared job's owner can lose access while a separate sender
+                # still has an independently authorized copy of the same media.
+                # Retry only this pre-dispatch failure and at most once.
+                if not joined or error.code != 'source_not_authorized' or not is_active():
+                    raise
+                joined = False
+            finally:
+                if task.done() and jobs.get(key) is task:
+                    jobs.pop(key, None)
+
+    async def _enrich_one(self, envelope, media, profile, interactive):
         profile_key = self._profile_key(profile)
         source_id = self._source_id(media)
         timing = {}
@@ -350,12 +372,11 @@ class MediaService:
                                      cache_hit=True, timing={'media_fetch_ms': 0.0,
                                                              'media_decode_ms': 0.0, 'vision_ms': 0.0})
         key = (envelope.scope.key, source_id, profile_key)
-        existing = self.source_inflight.get(key)
-        if existing is None:
-            existing = asyncio.create_task(self._prepare(envelope, media, profile, profile_key, source_id))
-            self.source_inflight[key] = existing
         try:
-            technical, timing, cache_hit = await asyncio.shield(existing)
+            technical, timing, cache_hit = await self._shared_result(
+                self.source_inflight, key,
+                lambda: self._prepare(envelope, media, profile, profile_key, source_id, interactive),
+                lambda: self._active(envelope, media))
             return self._observation(envelope, media, 'ready', technical=technical, profile=profile,
                                      cache_hit=cache_hit, timing=timing)
         except MediaUnavailable as error:
@@ -369,17 +390,14 @@ class MediaService:
                 status = 'unsupported'
             return self._observation(envelope, media, status, reason=code or type(error).__name__,
                                      profile=profile, timing=timing)
-        finally:
-            if existing.done() and self.source_inflight.get(key) is existing:
-                self.source_inflight.pop(key, None)
 
-    async def _prepare(self, envelope, media, profile, profile_key, source_id):
+    async def _prepare(self, envelope, media, profile, profile_key, source_id, interactive):
         timing = {}
         async with self.processing:
             # Recheck after queue/slot waiting. This also prevents fresh private
             # bytes being fetched after a deletion or permissions withdrawal.
             if not self._active(envelope, media):
-                raise MediaUnavailable('source_unavailable')
+                raise MediaUnavailable('source_not_authorized')
             started = self.clock()
             try:
                 acquired = await self._call(self.fetcher, media)
@@ -387,13 +405,17 @@ class MediaService:
                 if error.code != 'source_expired' or self.refresh_source is None or not self._active(envelope, media):
                     raise
                 refreshed = await self._call(self.refresh_source, envelope, media)
-                if refreshed is None:
+                if refreshed is None or media_identity(refreshed) != media_identity(media):
                     raise MediaUnavailable('source_unavailable')
+                if not self._active(envelope, media):
+                    raise MediaUnavailable('source_not_authorized')
                 acquired = await self._call(self.fetcher, refreshed)
             timing['media_fetch_ms'] = round((self.clock() - started) * 1000, 2)
             raw = acquired.data if isinstance(acquired, AcquiredMedia) else acquired
             if not isinstance(raw, bytes) or len(raw) > self.limits.max_bytes:
                 raise MediaUnavailable('source_too_large')
+            if not self._active(envelope, media):
+                raise MediaUnavailable('source_not_authorized')
             digest = hashlib.sha256(raw).hexdigest()
             cache_key = hashlib.sha256((digest + profile_key).encode()).hexdigest()
             cached = self.cache.get(envelope.scope, cache_key)
@@ -402,15 +424,10 @@ class MediaService:
                 timing.update(media_decode_ms=0.0, vision_ms=0.0)
                 return cached, timing, True
             job_key = (envelope.scope.key, cache_key)
-            analysis = self.inflight.get(job_key)
-            if analysis is None:
-                analysis = asyncio.create_task(self._analyse(raw, profile))
-                self.inflight[job_key] = analysis
-            try:
-                technical, analysis_timing = await asyncio.shield(analysis)
-            finally:
-                if analysis.done() and self.inflight.get(job_key) is analysis:
-                    self.inflight.pop(job_key, None)
+            technical, analysis_timing = await self._shared_result(
+                self.inflight, job_key,
+                lambda: self._analyse(raw, profile, envelope, media, interactive),
+                lambda: self._active(envelope, media))
             timing.update(analysis_timing)
             # A late result must not create searchable or reusable content from
             # an occurrence that was removed while the model was running.
@@ -418,14 +435,46 @@ class MediaService:
                 self.cache.put(envelope.scope, source_id, profile_key, cache_key, technical)
             return technical, timing, False
 
-    async def _analyse(self, raw, profile):
+    async def _dispatch_allowed(self, envelope, media):
+        if self.closed or not self._active(envelope, media):
+            return False
+        if self.authorize_dispatch is not None and not await self._call(self.authorize_dispatch, envelope, media):
+            return False
+        return not self.closed and self._active(envelope, media)
+
+    async def _describe(self, frames, profile, envelope, media, interactive):
+        try:
+            parameters = inspect.signature(self.describer).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        kwargs = {'interactive': interactive} if 'interactive' in parameters else {}
+        async_callable = (inspect.iscoroutinefunction(self.describer)
+                          or inspect.iscoroutinefunction(getattr(self.describer, '__call__', None)))
+        if 'before_dispatch' in parameters and not async_callable:
+            loop = asyncio.get_running_loop()
+
+            def before_dispatch():
+                guard = asyncio.run_coroutine_threadsafe(self._dispatch_allowed(envelope, media), loop)
+                return guard.result()
+
+            kwargs['before_dispatch'] = before_dispatch
+        elif not await self._dispatch_allowed(envelope, media):
+            raise MediaUnavailable('source_not_authorized')
+        try:
+            return await self._call(self.describer, frames, profile, **kwargs)
+        except Exception as error:
+            if getattr(error, 'code', None) == 'request_invalidated':
+                raise MediaUnavailable('source_not_authorized') from None
+            raise
+
+    async def _analyse(self, raw, profile, envelope, media, interactive):
         started = self.clock()
         decoded = await self._call(self.decoder, raw, limits=self.limits)
         timing = {'media_decode_ms': round((self.clock() - started) * 1000, 2)}
         if not self.trusted_test and not vision_available(profile, multiple=len(decoded.frames) > 1):
             raise MediaUnavailable('capability_unavailable')
         started = self.clock()
-        result = await self._call(self.describer, decoded.frames, profile)
+        result = await self._describe(decoded.frames, profile, envelope, media, interactive)
         timing['vision_ms'] = round((self.clock() - started) * 1000, 2)
         if not isinstance(result, dict):
             raise MediaUnavailable('invalid_description')
@@ -461,7 +510,7 @@ class MediaService:
                      'actual_format': decoded.actual_format, 'sampled_at_ms': list(decoded.sampled_at_ms),
                      'frame_count': decoded.frame_count, 'duration_ms': decoded.duration_ms,
                      'limitations': list(dict.fromkeys([*decoded.limitations, *limitations]))[:30],
-                     'analysed_at': utc_iso(datetime.fromtimestamp(self.now(), timezone.utc)), 'provenance': provenance,
+                     'analyzed_at': utc_iso(datetime.fromtimestamp(self.now(), timezone.utc)), 'provenance': provenance,
                      'course_fact_status': 'not_verified'}
         return technical, timing
 

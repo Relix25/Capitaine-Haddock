@@ -16,6 +16,86 @@ from courswatch.conversation.metrics import MeasuredResult
 
 
 class ChatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_failure_keeps_the_durable_request_and_ingestion_timing(self):
+        from courswatch.memory import Journal
+        chat = self.chat()
+        clock, _ = self.fast_clock(chat)
+        chat.journal = Journal(chat.data / 'conversation.db')
+        def status(**fields):
+            if 'last_chat_decision' in fields:
+                clock[0] += 0.05
+                raise OSError('diagnostic unavailable')
+        chat.bot.write_status.side_effect = status
+        message = self.message(created_at=datetime.now(timezone.utc))
+        chat.accept(message)
+        await chat.task
+        chat.accept(message)
+        message.reply.assert_awaited_once()
+        chat.brain.decide.assert_called_once()
+        timing = next(call.kwargs['last_chat_timing'] for call in chat.bot.write_status.call_args_list
+                      if 'last_chat_timing' in call.kwargs)
+        self.assertEqual(timing['first_useful_ms'], 200.0)
+
+    async def test_refused_snapshot_dependency_prevents_provider_dispatch(self):
+        chat = self.chat()
+        self.fast_clock(chat)
+        chat.bot.conversation_dependencies_allowed = AsyncMock(return_value=False)
+        message = self.message()
+        chat.accept(message)
+        await chat.task
+        chat.brain.decide.assert_not_called()
+        message.reply.assert_not_awaited()
+        self.assertTrue(all(not call.kwargs['publishing']
+                            for call in chat.bot.conversation_dependencies_allowed.await_args_list))
+
+    async def test_abandoned_model_attempt_records_cost_and_never_sends(self):
+        chat = self.chat()
+        self.fast_clock(chat)
+        message = self.message()
+        def decide(*args, **kwargs):
+            snapshot = kwargs['request']
+            chat.coordinator.delete(snapshot.scope, snapshot.reply_target_id)
+            return MeasuredResult({'action':'text','reply':'À bord !','sample_id':'none'},
+                                  {'call_id':7, 'total_tokens':130})
+        chat.brain.decide.side_effect = decide
+        chat.accept(message)
+        await chat.task
+        message.reply.assert_not_awaited()
+        timing = chat.bot.write_status.call_args.kwargs['last_chat_timing']
+        self.assertTrue(timing['discarded_request'])
+        self.assertEqual((timing['call_id'], timing['total_tokens']), (7, 130))
+
+    async def test_course_question_with_emoji_keeps_its_official_citation(self):
+        from courswatch.conversation.contracts import Evidence, EvidenceBundle, Scope
+        chat = self.chat()
+        self.fast_clock(chat)
+        evidence = Evidence('proof', 'source', Scope('1','2'), 'official',
+                            'https://example.invalid/aait', 'AAIT', 'Fixture.', 'v1',
+                            datetime.now(timezone.utc).isoformat())
+        chat.knowledge = SimpleNamespace(is_course_question=lambda query, scope: True,
+            query=MagicMock(return_value=EvidenceBundle(evidence=(evidence,))),
+            revalidate=MagicMock(return_value=True))
+        chat.media = SimpleNamespace(submit=MagicMock(), enrich=AsyncMock(), close=AsyncMock())
+        message = self.message(content='Haddock, quelle date pour AAIT ? <:oui:12345>')
+        chat.accept(message)
+        await chat.task
+        chat.media.enrich.assert_not_awaited()
+        request = chat.knowledge.query.call_args.args[0]
+        self.assertEqual(request.intent, 'course')
+        self.assertIn('https://example.invalid/aait', self.spoken_reply(message))
+
+    async def test_unreadable_voice_receipt_never_falls_back_to_text(self):
+        chat = self.chat()
+        chat.bot.voice_samples = [SimpleNamespace(id='cafe')]
+        chat.bot.voice_probability = 1
+        message = self.message()
+        decision = {'action':'sample', 'reply':'À bord !', 'sample_id':'cafe'}
+        failure = json.JSONDecodeError('partial', '', 0)
+        with patch('courswatch.conversation.chat.send_voice_message', side_effect=failure):
+            self.assertIsNone(await chat.deliver(message, decision, True))
+        message.reply.assert_not_awaited()
+        self.assertEqual(chat.bot.write_status.call_args.kwargs['last_voice_error']['outcome'], 'uncertain')
+
     async def test_social_retrieval_is_versioned_and_deletion_invalidates_reply(self):
         from courswatch.memory import Journal
         from courswatch.knowledge import KnowledgeService
@@ -784,6 +864,31 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         message.reply.assert_awaited_once()
         self.assertIn('Un panneau bleu.',self.spoken_reply(message))
         self.assertEqual(chat.brain.decide.call_count,0)
+        await chat.close()
+
+    async def test_media_proof_cannot_validate_older_text_using_new_observation_hash(self):
+        from dataclasses import replace
+        from courswatch.conversation.contracts import MediaDescriptor
+        from courswatch.conversation.ingestion import envelope_from_message
+        from courswatch.knowledge import KnowledgeService
+        from courswatch.memory import Journal
+        chat = self.chat()
+        self.fast_clock(chat)
+        chat.journal = Journal(chat.data / 'conversation.db')
+        chat.knowledge = KnowledgeService(chat.data, {}, journal=chat.journal)
+        message = self.message(content='Haddock, décris cette image.')
+        envelope = replace(envelope_from_message(message), media=(
+            MediaDescriptor('image', 'image', 'https://cdn.discordapp.com/attachments/1/2/f.png'),))
+        changed = {'status':'ready','message_id':'123','media_id':'image','description':'30 novembre'}
+        stale = {**changed, 'description':'23 novembre'}
+        async def enrich(item, **kwargs):
+            chat.journal.save_observation(item.scope, item.message_id, item.revision, 'image', changed)
+            return (stale,)
+        chat.media = SimpleNamespace(submit=MagicMock(), enrich=enrich, close=AsyncMock())
+        chat.observe(envelope, message, True)
+        await chat.task
+        message.reply.assert_not_awaited()
+        chat.brain.decide.assert_not_called()
         await chat.close()
 
 if __name__ == '__main__': unittest.main()

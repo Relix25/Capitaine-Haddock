@@ -7,7 +7,7 @@ older, never observed source text is explicitly unknown.
 from __future__ import annotations
 
 from contextlib import closing
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -19,7 +19,9 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from courswatch.conversation.contracts import Evidence, EvidenceBundle, RetrievalRequest, Scope, utc_iso
-from courswatch.reminders import resolve_task
+from courswatch.media import observation_digest, observation_limitations
+from courswatch.media.normalize import CUSTOM_EMOJI
+from courswatch.reminders import reminder_config_path, resolve_task
 
 _STOP = frozenset('le la les de des du un une au aux et est ce c ça c’est cest quand pour '
                   'projet projets cours tu te notre nous vous on en a qu quelle quelles '
@@ -27,13 +29,70 @@ _STOP = frozenset('le la les de des du un une au aux et est ce c ça c’est ces
                   'rappelles rappelle souvenir il y avait avais dit envoyé envoye image gif qu que qui par sur haddock capitaine'.split())
 _HISTORY = re.compile(r'\b(souviens|souvenir|rappelles|discussion|avions|avait|semaine derni[eè]re|il y a une semaine)\b', re.I)
 _DATE = re.compile(r'\b(quand|date|dates|[eé]ch[eé]ance|remise|rendu|d[eé]p[oô]t|oral|pr[eé]sentation|deadline)\b', re.I)
-_MEDIA = re.compile(r'\b(image|photo|gif|emoji|anim[eé])\b', re.I)
+_MEDIA = re.compile(r'\b(images?|photos?|gifs?|emojis?|m[ée]dias?|animations?|anim[eé]s?)\b', re.I)
+_COURSE_INTENT = re.compile(r'\b(consignes?|annonces?|pdf|projets?|documents?|rendre|calendrier)\b', re.I)
+_VISUAL_CONTEXT = re.compile(
+    r'\b(?:dans|sur)\s+(?:(?:le|la|mon|ma|ce|cet|cette|cette dernière)\s+|l[’\x27])'
+    r'(?:image|photo|gif|emoji|m[ée]dia|animation)\b', re.I)
+_REQUEST_BOUNDARY = re.compile(
+    r'[?!;\n]+|\bet\s+(?=(?:quel(?:le)?s?|quand|que\s+(?:montre|voit)|'
+    r'd[ée]cri[st]?|d[ée]crire|lis|peux-tu|pourrais-tu)\b)', re.I)
+_OWN_MEDIA = re.compile(
+    r'\b(?:mon|ma|mes)\s+(?:(?:dernier|dernière)s?\s+)?'
+    r'(?:images?|photos?|gifs?|emojis?|m[ée]dias?|animations?)\b'
+    r'|\bj[’\x27]ai\s+(?:envoy[ée]|post[ée]|partag[ée])\b', re.I)
+_MEDIA_REFERENCE_WORDS = frozenset(
+    'avec mon ma mes dernier dernière derniers dernières envoyé envoyée posté postée partagé partagée'.split())
+
+
+def _words(text):
+    text = re.sub(r'([^\W\d_])((?:19|20)\d{2})(?!\d)', r'\1 \2', str(text))
+    return re.findall(r'[^\W_]+', text.casefold())
 
 
 def _tokens(text):
-    text = re.sub(r'([^\W\d_])((?:19|20)\d{2})(?!\d)', r'\1 \2', str(text))
-    return {token.casefold() for token in re.findall(r'[^\W_]+', text, re.UNICODE)
-            if token.casefold() not in _STOP and len(token) > 1}
+    return {token for token in _words(text) if token not in _STOP and len(token) > 1}
+
+
+def is_own_media_request(question):
+    """Only an explicit first-person reference binds author identity to the turn."""
+    return bool(_MEDIA.search(question) and _OWN_MEDIA.search(question))
+
+
+def _course_source_id(source):
+    namespace, _, identifier = source.partition(':')
+    return identifier.casefold() if namespace in ('moodle', 'teams') else ''
+
+
+def _course_ids(question, settings, sources):
+    aliases = {}
+    for source in sources:
+        identifier = _course_source_id(source)
+        if identifier:
+            aliases.setdefault(' '.join(_words(identifier)), set()).add(identifier)
+    for course in settings.get('courses', ()):
+        identifier = course['id'].casefold()
+        for alias in (identifier, course.get('label') or identifier):
+            aliases.setdefault(' '.join(_words(alias)), set()).add(identifier)
+    if not aliases:
+        return frozenset()
+    # At a given position consume a full course name or compound identifier
+    # before a shorter alias. Never match a substring of a word.
+    alternatives = '|'.join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
+    names = re.findall(r'\b(?:' + alternatives + r')\b', ' '.join(_words(question)))
+    return frozenset(identifier for name in names for identifier in aliases[name])
+
+
+def _requested_course_ids(question, settings, allowed):
+    # A visual clause must not move an independently requested deadline to
+    # memory search. A date visible inside an image is still a visual request.
+    clauses = _REQUEST_BOUNDARY.split(CUSTOM_EMOJI.sub('', question))
+    return frozenset(
+        identifier for clause in clauses
+        if (_DATE.search(clause) or _COURSE_INTENT.search(clause))
+        and not (_VISUAL_CONTEXT.search(clause) or is_own_media_request(clause))
+        for identifier in _course_ids(clause, settings, allowed)
+    )
 
 
 def _requested_years(text):
@@ -59,8 +118,11 @@ def _safe(text):
 def _url(value):
     if not isinstance(value, str) or len(value) > 600 or any(c in value for c in '\n\r<>'):
         return ''
-    parsed = urlsplit(value)
-    return value if parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password else ''
+    try:
+        parsed = urlsplit(value)
+        return value if parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password else ''
+    except ValueError:
+        return ''
 
 
 def _citation(evidence, label='Source'):
@@ -124,6 +186,11 @@ class KnowledgeService:
             raise ValueError('Sources must be an explicit sequence per scope')
         return frozenset(str(source) for source in value)
 
+    def is_course_question(self, question, scope=None):
+        settings = self._settings()
+        allowed = self._sources(scope) if scope is not None else ()
+        return bool(_requested_course_ids(question, settings, allowed))
+
     def _now(self, value=None):
         moment = value or self.clock()
         if isinstance(moment, str):
@@ -173,12 +240,11 @@ class KnowledgeService:
                                     (scope.key, source, key, fingerprint, payload, observed,
                                      item.get('published_at'), 'current'))
 
-    def _tasks(self, scope, question, settings, now, allowed, task_ids=None):
-        reminders_file = settings.get('reminders_file')
-        if not reminders_file:
-            return (), '', ()
+    def _tasks(self, scope, question, settings, now, allowed, task_ids=None, named_courses=()):
         try:
-            reminders = json.loads(Path(reminders_file).read_text(encoding='utf-8'))
+            reminders = json.loads(reminder_config_path(settings).read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return (), '', ('Configuration des tâches indisponible.',) if settings.get('reminders_file') else ()
         except (OSError, ValueError):
             return (), '', ('Configuration des tâches indisponible.',)
         terms = _tokens(question)
@@ -186,20 +252,13 @@ class KnowledgeService:
                  if task.get('reference', {}).get('source') in allowed]
         if task_ids is not None:
             tasks = [task for task in tasks if task.get('id') in task_ids]
-        courses = {task['course'] for task in tasks}
-        named_courses = {course for course in courses if _tokens(course) & terms}
-        for course in settings.get('courses', []):
-            if _tokens(course.get('id', '')) & terms:
-                named_courses.add(course.get('label', course.get('id')))
-                named_courses.add(course.get('id'))
-        if task_ids is not None:
-            pass
-        elif named_courses:
-            tasks = [task for task in tasks if task['course'] in named_courses or
-                     task['reference']['source'].split(':', 1)[-1] in named_courses]
-        else:
+        elif not named_courses:
             tasks = [task for task in tasks if terms & _tokens(task.get('title', '') + ' ' + task['course'])]
-        topic_terms = terms - set().union(*(_tokens(course) for course in named_courses)) if named_courses else terms
+        course_terms = set().union(*(_tokens(course) for course in named_courses))
+        for course in settings.get('courses', ()):
+            if course['id'].casefold() in named_courses:
+                course_terms.update(_tokens(course.get('label', '')))
+        topic_terms = terms - course_terms
         if topic_terms and task_ids is None:
             scores = {task['id']: len(topic_terms & _tokens(task.get('title', '') + ' ' + task.get('action', '')))
                       for task in tasks}
@@ -215,6 +274,8 @@ class KnowledgeService:
             return (), '', ('Cache métier indisponible.',)
         evidence = []
         with closing(state):
+            # Read fingerprint, body and source status from the same SQLite snapshot.
+            state.execute('BEGIN')
             for task in tasks:
                 reference = task['reference']
                 source, key = reference['source'], reference['key']
@@ -231,7 +292,7 @@ class KnowledgeService:
                                                 reminders.get('policy', {}), include_past=True)
                 except (sqlite3.Error, KeyError, TypeError, ValueError):
                     resolved, row, source_state = {'unconfirmed': True, 'reason': 'source à revalider'}, None, None
-                if row:
+                if row and task_ids is None:
                     self._remember(scope, [(source, key, *row)])
                 payload = json.loads(row[1]) if row else {}
                 valid = resolved and not resolved.get('unconfirmed')
@@ -240,10 +301,11 @@ class KnowledgeService:
                 due = resolved.get('due') if valid else None
                 date_value = (due.isoformat() if resolved['has_time'] else due.date().isoformat()) if due else None
                 precision = ('datetime' if resolved['has_time'] else 'date_only') if due else None
-                version = _hash([task, row[0] if row else None, source_state[0] if source_state else None,
+                source_url = _url(payload.get('url')) or _url(task.get('url'))
+                version = _hash([task, row[0] if row else None, source_url, date_value, precision, status,
                                  resolved.get('reason') if resolved else None])
                 evidence.append(Evidence('task:' + task['id'], 'task', scope,
-                    json.dumps([source, key]), task.get('url', payload.get('url', '')), task['title'],
+                    json.dumps([source, key]), source_url, task['title'],
                     payload.get('body', '') if valid else resolved.get('reason', 'date à confirmer'),
                     version, source_state[1] if source_state and source_state[1] else utc_iso(self._now()),
                     payload.get('published_at'), payload.get('author_id') or payload.get('author'),
@@ -257,7 +319,8 @@ class KnowledgeService:
             if not evidence:
                 return (), 'Je n’ai pas de date confirmée pour ' + ', '.join(sorted(requested_years)) + '. Tu parles de l’année de l’échéance ou de l’année universitaire ?', ()
         if task_ids is None and len(evidence) > 1 and not re.search(r'\b(toutes?|dates|[eé]ch[eé]ances|r[eé]capitul)\b', question, re.I):
-            return (), 'Tu parles de quelle échéance : ' + ' ; '.join(item.title for item in evidence[:4]) + ' ?', ()
+            options = evidence[:4]
+            return tuple(options), 'Tu parles de quelle échéance : ' + ' ; '.join(item.title for item in options) + ' ?', ()
         return tuple(evidence), '', ()
 
     def _source_evidence(self, scope, question, allowed):
@@ -352,7 +415,10 @@ class KnowledgeService:
             after, before = utc_iso(week - timedelta(days=7)), utc_iso(week)
         elif not after and re.search(r'il y a une semaine', request.query, re.I):
             after, before = utc_iso(now - timedelta(days=9)), utc_iso(now - timedelta(days=5))
+        media_request = bool(_MEDIA.search(request.query))
         terms = _tokens(request.query)
+        if media_request:
+            terms = {term for term in terms - _MEDIA_REFERENCE_WORDS if not _MEDIA.fullmatch(term)}
         author_id = request.author_id
         if author_id is None:
             query_names = _tokens(request.query)
@@ -365,7 +431,7 @@ class KnowledgeService:
                 terms -= _tokens(name)
         matches = self.journal.search(request.scope, ' '.join(sorted(terms)),
                                       after=after, before=before, author_id=author_id, limit=8,
-                                      media_only=bool(_MEDIA.search(request.query)))
+                                      media_only=media_request)
         evidence = []
         for message in matches:
             if message.is_bot:
@@ -374,7 +440,7 @@ class KnowledgeService:
                 evidence.append(Evidence('message:' + message.message_id, 'conversation', request.scope,
                     message.message_id, message.source_url, message.display_name, message.text, str(message.revision),
                     message.received_at or message.created_at, message.created_at, message.author_id))
-            if _MEDIA.search(request.query):
+            if media_request:
                 observations = self.journal.observations(request.scope, message.message_id)
                 for row in observations:
                     observation = row['observation']
@@ -383,15 +449,15 @@ class KnowledgeService:
                     pieces = []
                     for key, label in (('description', 'Description'), ('ocr', 'Texte visible'),
                                        ('animation', 'Animation'), ('limitations', 'Limites')):
-                        value = observation.get(key)
+                        value = observation_limitations(observation) if key == 'limitations' else observation.get(key)
                         if value:
                             pieces.append(label + ' : ' + (value if isinstance(value, str) else
                                           json.dumps(value, ensure_ascii=False)))
                     evidence.append(Evidence('media:' + message.message_id + ':' + row['media_id'],
                         'media_observation', request.scope, json.dumps([message.message_id, row['media_id']]),
                         message.source_url, message.display_name, '\n'.join(pieces),
-                        str(message.revision) + ':' + _hash(observation),
-                        observation.get('analyzed_at') or message.received_at or message.created_at,
+                        str(message.revision) + ':' + observation_digest(observation),
+                        observation.get('analyzed_at') or observation.get('analysed_at') or '',
                         message.created_at, message.author_id, status='observation'))
         coverage = self.journal.coverage(request.scope)
         status = ''
@@ -409,15 +475,25 @@ class KnowledgeService:
     def query(self, scope, question=None, *, now=None, budget_chars=7000):
         request = scope if isinstance(scope, RetrievalRequest) else RetrievalRequest(scope, question or '', budget_chars=budget_chars)
         moment = self._now(now)
-        if request.intent == 'conversation' or _HISTORY.search(request.query) or _MEDIA.search(request.query):
+        if request.intent == 'conversation':
             return self._conversation(request, moment)
         allowed = self._sources(request.scope)
+        settings = self._settings()
+        requested_courses = _requested_course_ids(request.query, settings, allowed)
+        if (request.intent != 'course' and not requested_courses
+                and (_HISTORY.search(request.query) or _MEDIA.search(request.query))):
+            return self._conversation(request, moment)
         if not allowed:
             return EvidenceBundle(coverage='Aucune source métier explicitement partagée avec ce salon.')
-        settings = self._settings()
-        tasks, clarification, gaps = self._tasks(request.scope, request.query, settings, moment, allowed)
+        named_courses = requested_courses or _course_ids(CUSTOM_EMOJI.sub('', request.query), settings, allowed)
+        if named_courses:
+            allowed = frozenset(source for source in allowed if _course_source_id(source) in named_courses)
+            if not allowed:
+                return EvidenceBundle(coverage='Je n’ai pas de source partagée pour le cours demandé.')
+        tasks, clarification, gaps = self._tasks(
+            request.scope, request.query, settings, moment, allowed, named_courses=named_courses)
         if clarification:
-            return EvidenceBundle(clarification=clarification, gaps=gaps)
+            return EvidenceBundle(clarification=clarification, gaps=gaps, dependencies=tasks)
         if tasks:
             selected = _bounded(tasks, request.budget_chars)
             return EvidenceBundle(selected, coverage='' if selected else 'Budget insuffisant pour une preuve complète.', gaps=gaps)
@@ -429,7 +505,9 @@ class KnowledgeService:
 
     def revalidate(self, scope, bundle):
         allowed = self._sources(scope)
-        for item in bundle.evidence:
+        items = (*bundle.evidence, *bundle.dependencies)
+        task_versions = None
+        for item in items:
             if item.scope != scope:
                 return False
             if item.kind in {'conversation', 'media_observation'}:
@@ -441,7 +519,7 @@ class KnowledgeService:
                     media_id = json.loads(item.source_id)[1]
                     observations = self.journal.observations(scope, identifier, media_id)
                     if not any(row['observation'].get('status') == 'ready' and
-                               str(current.revision) + ':' + _hash(row['observation']) == item.version
+                               str(current.revision) + ':' + observation_digest(row['observation']) == item.version
                                for row in observations):
                         return False
                 elif str(current.revision) != item.version:
@@ -455,10 +533,11 @@ class KnowledgeService:
             if source not in allowed:
                 return False
             if item.kind == 'task':
-                tasks, _, _ = self._tasks(scope, item.title, self._settings(), self._now(), allowed,
-                                          task_ids=(item.id.removeprefix('task:'),))
-                current = next((row for row in tasks if row.id == item.id), None)
-                if current is None or current.version != item.version:
+                if task_versions is None:
+                    ids = {row.id.removeprefix('task:') for row in items if row.kind == 'task'}
+                    tasks, _, _ = self._tasks(scope, '', self._settings(), self._now(), allowed, task_ids=ids)
+                    task_versions = {row.id: row.version for row in tasks}
+                if task_versions.get(item.id) != item.version:
                     return False
             elif item.kind == 'source':
                 try:
@@ -521,7 +600,14 @@ def render_answer(bundle, max_chars=1700):
             line = _safe(f'Le {date:%d/%m/%Y}, {item.title} : « {item.excerpt} »') + _citation(item, 'Échange')
         elif item.kind == 'media_observation':
             date = datetime.fromisoformat(item.published_at.replace('Z', '+00:00')).astimezone(ZoneInfo('Europe/Bucharest'))
-            line = _safe(f'Observation mémorisée du média envoyé par {item.title} le {date:%d/%m/%Y} : {item.excerpt}') + _citation(item, 'Média')
+            analysis = ''
+            if item.observed_at:
+                try:
+                    analyzed = datetime.fromisoformat(item.observed_at.replace('Z', '+00:00')).astimezone(date.tzinfo)
+                    analysis = f' (analyse du {analyzed:%d/%m/%Y})'
+                except (TypeError, ValueError):
+                    pass
+            line = _safe(f'Observation mémorisée du média envoyé par {item.title} le {date:%d/%m/%Y}{analysis} : {item.excerpt}') + _citation(item, 'Média')
         else:
             # Retrieved source text is quoted as data, not promoted to a parsed date.
             suffix = ' (source à revérifier)' if item.status == 'stale' else ''

@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 from courswatch.conversation.contracts import (MediaDescriptor, MessageEnvelope,
                                                ModelCapabilities, ModelProfile, Scope)
-from courswatch.media import normalize_media
+from courswatch.media import media_identity, normalize_media, observation_digest, observation_limitations
 from courswatch.media.acquisition import (AcquiredMedia, MediaUnavailable, _NoRedirect,
                                           fetch_media, validate_url)
 from courswatch.media.decode import DecodeLimits, decode_media
@@ -72,6 +72,15 @@ def description(frames, profile):
 
 
 class NormalizeTests(unittest.TestCase):
+    def test_media_identity_ignores_discord_signature_and_detects_same_slot_replacement(self):
+        base = MediaDescriptor('embed:0:image', 'image',
+                               'https://media.discordapp.net/attachments/1/2/old.png?width=400&ex=100&is=1&hm=a',
+                               'discord_embed')
+        renewed = replace(base, url=base.url.replace('ex=100&is=1&hm=a', 'ex=200&is=2&hm=b'))
+        self.assertEqual(media_identity(base), media_identity(renewed))
+        self.assertNotEqual(media_identity(base), media_identity(replace(renewed, url=renewed.url.replace('old.png', 'new.png'))))
+        self.assertNotEqual(media_identity(base), media_identity(replace(renewed, url=renewed.url.replace('400', '800'))))
+
     def test_image_only_message_and_distinct_attachment_positions(self):
         source = SimpleNamespace(content='', embeds=[], attachments=[
             SimpleNamespace(id=1, url='https://cdn.discordapp.com/a.png', content_type='image/png', size=10, filename='A.png'),
@@ -101,6 +110,14 @@ class NormalizeTests(unittest.TestCase):
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_content_length_must_match_download(self):
+        class Truncated(io.BytesIO):
+            status = 200
+            headers = {'Content-Type': 'image/gif', 'Content-Length': '6'}
+        client = SimpleNamespace(open=lambda *args, **kwargs: Truncated(b'123'))
+        with self.assertRaisesRegex(MediaUnavailable, 'source_truncated'):
+            fetch_media(message().media[0], opener=client)
+
     def test_allowlist_refuses_private_urls_credentials_ports_and_lookalike_hosts(self):
         for url in ('http://cdn.discordapp.com/a.png', 'https://127.0.0.1/a.png',
                     'https://cdn.discordapp.com.evil.invalid/a.png',
@@ -133,6 +150,12 @@ class AcquisitionTests(unittest.TestCase):
 
 
 class DecodeTests(unittest.TestCase):
+    def test_gif_with_decodable_first_frame_requires_a_structural_trailer(self):
+        data = (FIXTURES / 'late-overlay.gif').read_bytes()
+        for incomplete in (data[:192], data[:-1], data[:192] + b';'):
+            with self.subTest(length=len(incomplete)), self.assertRaisesRegex(MediaUnavailable, 'invalid_gif_'):
+                decode_media(incomplete)
+
     def test_static_actual_format_and_not_filename_or_claimed_type(self):
         result = decode_media((FIXTURES / 'synthetic-date.png').read_bytes())
         self.assertEqual(result.actual_format, 'PNG')
@@ -307,7 +330,7 @@ class MediaServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_analysis_timestamp_uses_controlled_clock(self):
         envelope = self.journal.add(message())
         observation = (await self.service(now=lambda: 0).enrich(envelope))[0]
-        self.assertEqual(observation['analysed_at'], '1970-01-01T00:00:00+00:00')
+        self.assertEqual(observation['analyzed_at'], '1970-01-01T00:00:00+00:00')
 
     async def test_existing_dated_description_survives_expired_url_and_changed_model(self):
         envelope = self.journal.add(message())
@@ -318,12 +341,67 @@ class MediaServiceTests(unittest.IsolatedAsyncioTestCase):
         second = (await service.enrich(envelope, changed))[0]
         unavailable.assert_not_called()
         self.assertTrue(second['prior_observation'])
-        self.assertEqual(second['analysed_at'], first['analysed_at'])
+        self.assertEqual(second['analyzed_at'], first['analyzed_at'])
         self.assertEqual(second['provenance']['requested_model_id'], PROFILE.requested_model_id)
         refreshed = (await service.enrich(envelope, changed, refresh=True))[0]
         self.assertEqual(refreshed['status'], 'ready')
         self.assertEqual(refreshed['recheck_reason'], 'source_expired')
-        self.assertEqual(refreshed['analysed_at'], first['analysed_at'])
+        self.assertEqual(refreshed['analyzed_at'], first['analyzed_at'])
+
+    async def test_gif_legacy_observation_retains_content_with_integrity_notice(self):
+        saved = {'actual_format': 'GIF', 'analysed_at': '2026-11-17T10:00:00+00:00',
+                 'description': 'Panneau bleu', 'limitations': [],
+                 'provenance': {'preprocess_version': 'timed-animation-v1'}}
+        returned = {**saved, 'cache_hit': True, 'prior_observation': True, 'metrics': {'vision_ms': 0}}
+        self.assertEqual(observation_digest(saved), observation_digest(returned))
+        self.assertNotEqual(observation_digest(saved), observation_digest({**returned, 'description': 'Panneau rouge'}))
+        self.assertIn('complétude est inconnue', observation_limitations(returned)[0])
+
+    async def test_authorization_is_checked_after_decoding_before_provider_dispatch(self):
+        envelope = self.journal.add(message())
+        authorized = True
+        def decode(data, *, limits):
+            nonlocal authorized
+            authorized = False
+            return decode_media(data, limits=limits)
+        async def guard(current, media):
+            self.assertEqual(current, envelope)
+            self.assertEqual(media, envelope.media[0])
+            return authorized
+        provider = Mock(side_effect=description)
+        from courswatch.conversation.brain import LunaError
+        def transport(frames, profile, *, before_dispatch, interactive):
+            self.assertTrue(interactive)
+            if not before_dispatch():
+                raise LunaError('request_invalidated')
+            return provider(frames, profile)
+        service = self.service(decoder=decode, authorize_dispatch=guard, describer=transport)
+        row, = await service.enrich(envelope)
+        self.assertEqual(row['reason'], 'source_not_authorized')
+        provider.assert_not_called()
+
+    async def test_active_waiter_can_analyze_its_copy_after_shared_owner_loses_access(self):
+        first = self.journal.add(message('m1', author='alice'))
+        second = self.journal.add(message('m2', author='bob'))
+        at_guard, release_guard = asyncio.Event(), asyncio.Event()
+        async def guard(current, media):
+            if current == first:
+                at_guard.set()
+                await release_guard.wait()
+                return False
+            return current == second
+        provider = Mock(side_effect=description)
+        service = self.service(authorize_dispatch=guard, describer=provider)
+        first_task = asyncio.create_task(service.enrich(first))
+        await at_guard.wait()
+        second_task = asyncio.create_task(service.enrich(second))
+        await asyncio.sleep(0)
+        release_guard.set()
+        rows_first, rows_second = await asyncio.gather(first_task, second_task)
+        self.assertEqual(rows_first[0]['reason'], 'source_not_authorized')
+        self.assertEqual(rows_second[0]['status'], 'ready')
+        self.assertEqual(rows_second[0]['author_id'], 'bob')
+        provider.assert_called_once()
 
     async def test_test_adapter_cache_and_observation_never_count_as_production_vision(self):
         envelope = self.journal.add(message())
@@ -453,11 +531,19 @@ class MediaServiceTests(unittest.IsolatedAsyncioTestCase):
             if len(calls) == 1:
                 raise MediaUnavailable('source_expired')
             return (FIXTURES / 'synthetic-date.png').read_bytes()
-        refresh = Mock(return_value=replace(envelope.media[0], url='https://cdn.discordapp.com/refreshed.png'))
+        refresh = Mock(return_value=replace(envelope.media[0], url=envelope.media[0].url + '?ex=100&is=1&hm=new'))
         result = await self.service(fetcher=fetcher, refresh_source=refresh).enrich(envelope)
         self.assertEqual(result[0]['status'], 'ready')
         self.assertEqual(len(calls), 2)
         refresh.assert_called_once()
+
+    async def test_refreshed_source_cannot_substitute_a_different_media_at_same_position(self):
+        envelope = self.journal.add(message())
+        refresh = Mock(return_value=replace(envelope.media[0], url='https://cdn.discordapp.com/attachments/1/3/new.png'))
+        fetcher = Mock(side_effect=MediaUnavailable('source_expired'))
+        result = await self.service(fetcher=fetcher, refresh_source=refresh).enrich(envelope)
+        self.assertEqual(result[0]['reason'], 'source_unavailable')
+        fetcher.assert_called_once()
 
     async def test_invalid_transcription_frame_is_not_persisted_as_ready(self):
         envelope = self.journal.add(message())

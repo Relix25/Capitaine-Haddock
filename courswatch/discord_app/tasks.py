@@ -7,7 +7,7 @@ import sqlite3
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from courswatch.reminders import resolve_task
+from courswatch.reminders import reminder_config_path, resolve_task
 from courswatch.discord_app.presentation import safe, safe_url
 from courswatch.discord_app.emojis import icon
 
@@ -16,7 +16,7 @@ MONTHS_FR = ('janvier', 'février', 'mars', 'avril', 'mai', 'juin',
 
 
 def task_rows(data_dir, config, course='tous', now=None, *, include_past=False):
-    settings = json.loads(Path(config.get('reminders_file', '/etc/cours-watch/reminders.json')).read_text())
+    settings = json.loads(reminder_config_path(config).read_text(encoding='utf-8'))
     tz = ZoneInfo(settings.get('timezone', 'Europe/Bucharest'))
     moment = now.astimezone(tz) if now else datetime.now(tz)
     rows = []

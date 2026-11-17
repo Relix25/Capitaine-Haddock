@@ -7,11 +7,13 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
 from courswatch.conversation.brain import BudgetExhausted, LunaBrain, LunaError, TokenBudget
-from courswatch.conversation.models import ENDPOINT, MODEL_CHOICES, resolve_profile
+from courswatch.conversation.models import (ENDPOINT, MODEL_CHOICES, resolve_profile,
+                                             settings_for_selection)
 
 
 def settings(profile='deepseek', **extra):
@@ -68,6 +70,102 @@ class ModelProfileTests(unittest.TestCase):
                        {'api_structured_output':'unknown'},{'provider':'openai'}):
             with self.subTest(change=change),self.assertRaises(ValueError):
                 resolve_profile(settings(model_capabilities={'deepseek':synthetic_reviewed_record(**change)}))
+        for name in MODEL_CHOICES:
+            record = synthetic_reviewed_record(name)
+            del record['evidence']
+            with self.subTest(profile=name), self.assertRaises(ValueError):
+                resolve_profile(settings(name, model_capabilities={name: record}))
+
+    def test_incomplete_total_only_settles_the_matching_call(self):
+        result = response(status='incomplete', usage={'total_tokens':9876,
+            'input_tokens_details':'malformed optional metadata'})
+        brain = LunaBrain(self.root, settings(), api_key='fake', transport=lambda _:result)
+        with self.assertRaises(LunaError) as error:
+            brain.decide([], True)
+        metrics = error.exception.metrics
+        self.assertEqual(error.exception.code, 'incomplete_response')
+        self.assertEqual(metrics['total_tokens'], 9876)
+        self.assertIsNone(metrics['input_tokens'])
+        self.assertIsNone(metrics['output_tokens'])
+        self.assertFalse(metrics['unknown_usage'])
+        self.assertEqual(brain.budget.snapshot()['used_tokens'], 9876)
+        with closing(brain.budget.connect()) as db:
+            saved = db.execute('SELECT charged,api_total_tokens FROM calls WHERE id=?',
+                               (metrics['call_id'],)).fetchone()
+        self.assertEqual(saved, (9876, 9876))
+
+    def test_vision_provision_excludes_base64_and_reports_the_active_profile(self):
+        records = {name:synthetic_reviewed_record(name) for name in MODEL_CHOICES}
+        config = settings(model_capabilities=records, daily_token_limit=100_000)
+        observation = {'visual_description':'Fixture.', 'visible_text':[],
+                       'animation_summary':'','limitations':[]}
+        transport = Mock(return_value=response(observation))
+        brain = LunaBrain(self.root, config, api_key='fake', transport=transport)
+        captured = brain.vision_profile()
+        candidate = settings_for_selection({'provider':'commandcode','model_capabilities':records}, 'hy4', False)
+        brain.use_profile(candidate, resolve_profile(candidate))
+        result = brain.describe_media([{'at_ms':0,'data':b'x'*500_000,'mime_type':'image/png'}], captured)
+        self.assertEqual(result['metrics']['requested_model_id'], MODEL_CHOICES['deepseek']['model'])
+        transport.assert_called_once()
+        with closing(brain.budget.connect()) as db:
+            reserved = db.execute('SELECT reserved FROM calls').fetchone()[0]
+        self.assertLess(reserved, 25_000)
+        report = json.loads((self.root/'reports/luna-status.json').read_text())
+        self.assertEqual(report['model'], MODEL_CHOICES['hy4']['model'])
+        self.assertEqual(report['last_call_profile']['requested_model_id'], MODEL_CHOICES['deepseek']['model'])
+
+    def test_shared_admission_prioritizes_text_and_rechecks_before_dispatch(self):
+        first_entered = threading.Event()
+        first_exits = threading.Event()
+        visits = []
+        observation = {'visual_description':'Fixture.', 'visible_text':[],
+                       'animation_summary':'','limitations':[]}
+
+        def transport(payload):
+            kind = payload['text']['format']['name']
+            visits.append(kind)
+            if len(visits) == 1:
+                first_entered.set()
+                self.assertTrue(first_exits.wait(3))
+            return response(observation) if kind == 'haddock_media_observation' else response()
+
+        brain = LunaBrain(self.root, settings(model_capabilities={'deepseek':synthetic_reviewed_record()}),
+                          api_key='fake',transport=transport)
+        profile = brain.vision_profile()
+        frames = [{'at_ms':0,'data':b'fixture','mime_type':'image/png'}]
+        queue_trace = threading.Event()
+        original_wait = brain._admission.wait_for
+
+        def wait_for(predicate, timeout=None):
+            if len(brain._admission_waiters) == 2:
+                queue_trace.set()
+            return original_wait(predicate, timeout)
+
+        def revoked():
+            self.assertEqual(visits, ['haddock_media_observation','haddock_decision'])
+            return False
+
+        with patch.object(brain._admission, 'wait_for', side_effect=wait_for):
+            with ThreadPoolExecutor(max_workers=3) as workers:
+                active = workers.submit(brain.describe_media, frames, profile)
+                try:
+                    self.assertTrue(first_entered.wait(3))
+                    cancelled = workers.submit(brain.describe_media, frames, profile,
+                                               before_dispatch=revoked)
+                    text = workers.submit(brain.decide, [], True)
+                    self.assertTrue(queue_trace.wait(3))
+                    self.assertEqual(visits, ['haddock_media_observation'])
+                    self.assertEqual(brain.budget.snapshot()['calls'], 1)
+                finally:
+                    first_exits.set()
+                self.assertGreaterEqual(text.result(timeout=3).metrics['provider_queue_ms'], 0)
+                active.result(timeout=3)
+                with self.assertRaises(LunaError) as error:
+                    cancelled.result(timeout=3)
+                self.assertEqual(error.exception.code, 'request_invalidated')
+                self.assertNotIn('call_id', error.exception.metrics)
+        self.assertEqual(visits, ['haddock_media_observation','haddock_decision'])
+        self.assertEqual(brain.budget.snapshot()['calls'], 2)
 
     def test_frozen_request_profile_preserves_headers_usage_and_unknown_revision_after_switch(self):
         brain=LunaBrain(self.root,settings(profile_config_version='configuration-A'),api_key='fake')
@@ -97,6 +195,11 @@ class ModelProfileTests(unittest.TestCase):
         weak=LunaBrain(self.root,settings('hy4',model_capabilities=records,vision_route='deepseek'),api_key='fake')
         self.assertEqual(weak.vision_profile().profile_id,'deepseek')
         self.assertTrue(weak.vision_profile().require_zdr)
+        records['hy4'] = synthetic_reviewed_record('hy4', require_zdr=True)
+        strong = LunaBrain(self.root, settings(model_capabilities=records, vision_route='hy4'), api_key='fake')
+        self.assertIsNone(strong.vision_profile())
+        strong.config = {**strong.config, 'vision_route_require_zdr':True}
+        self.assertTrue(strong.vision_profile().require_zdr)
 
     def test_synthetic_reviewed_record_serializes_fixed_frames_strict_json_and_zdr(self):
         observation={'visual_description':'Un panneau fictif.',

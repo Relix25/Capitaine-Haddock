@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import hashlib
+import logging
 import re
 from pathlib import Path
 import random
@@ -18,18 +19,24 @@ import discord
 from courswatch.models import stamp
 from courswatch.conversation.voice import send_voice_message, VoiceMessageError
 from courswatch.conversation.metrics import MeasuredResult, footer, local_metrics, reply_with_footer
-from courswatch.conversation.models import MODEL_CHOICES, effective_settings, save_preferences
+from courswatch.conversation.models import (MODEL_CHOICES, effective_settings, resolve_profile,
+    resolve_vision_profile, save_preferences, settings_for_selection)
 from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, addressed,
                         BudgetExhausted, LunaError, BUDGET_REPLY, OFFLINE_REPLY,
                         REPHRASE_REPLY, REFUSAL_REPLY, RESPONSE_ERRORS, safe_text)
-from courswatch.conversation.contracts import MessageEnvelope, Scope, utc_iso, Evidence, EvidenceBundle
+from courswatch.conversation.contracts import MessageEnvelope, Scope, utc_iso, Evidence, EvidenceBundle, RetrievalRequest
 from courswatch.conversation.coordinator import Coordinator, QueueFull
-from courswatch.conversation.participation import decide as participation, CANCEL, CONTINUATION
+from courswatch.conversation.participation import decide as participation
+
+_VISUAL_REQUEST = re.compile(r'\b(?:images?|photos?|gif|emojis?|animation|ocr|m[ée]dia|d[ée]cri[st]?|d[ée]crire|d[ée]cris|vois|visible|lisible|panneau)\b', re.I)
+_EXPLICIT_VISUAL = re.compile(r'\b(?:d[ée]cris|d[ée]crire|que montre|que voit|lis le texte|texte visible|ocr)\b', re.I)
+_UNSPECIFIED = object()
 
 
 class LunaChat:
     def __init__(self,bot,data,settings,config_loader,*,journal=None,knowledge=None,media=None,brain=None,now=None):
         self.bot,self.data,self.config_loader = bot,Path(data),config_loader
+        self.model_defaults = dict(settings)
         settings = effective_settings(data,settings)
         self.settings = settings
         self.now=now or (lambda:datetime.now(timezone.utc))
@@ -56,6 +63,8 @@ class LunaChat:
         self._media_timings = {}
         self._overflow_task = None
         self._messages,self._ingest_ms,self._evidence = {},{},{}
+        self._invalidated = {}
+        self._turn_profiles = {}
         self._warm_scopes = set()
         self._wake = asyncio.Event()
         self.task = None
@@ -67,37 +76,53 @@ class LunaChat:
                 or not isinstance(debug, bool)):
             raise ValueError('Unsupported model selection')
         async with self.model_lock:
-            await asyncio.to_thread(save_preferences, self.data, selection, debug)
-            profile = MODEL_CHOICES[selection]
-            self.brain.config = {**self.brain.config, **profile, 'debug':debug}
-            self.brain.model = profile['model']
-            self.brain.require_zdr = profile['require_zdr']
-            self.debug_enabled = debug
+            settings = settings_for_selection(self.model_defaults, selection, debug)
+            profile = resolve_profile(settings)
+            resolve_vision_profile(settings, profile)
+            worker = asyncio.create_task(asyncio.to_thread(save_preferences, self.data, selection, debug))
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                if not isinstance((await asyncio.gather(worker, return_exceptions=True))[0], BaseException):
+                    self.brain.use_profile(settings, profile)
+                    self.debug_enabled = debug
+                raise
+            else:
+                self.brain.use_profile(settings, profile)
+                self.debug_enabled = debug
             try:
                 await asyncio.to_thread(self.brain.publish,
                     'daily_limit' if self.brain.budget.snapshot()['blocked'] else 'ready')
             except (OSError, sqlite3.Error):
                 pass
 
-    def accept(self,message,mentioned=False):
+    def _status(self, **fields):
+        try:
+            self.bot.write_status(**fields)
+        except OSError:
+            logging.getLogger(__name__).debug('Conversation status is temporarily unavailable')
+
+    def accept(self,message,mentioned=False,*,received_at=None,received_utc=None):
         # Authorization precedes normalization, persistence and media acquisition.
         from courswatch.conversation.ingestion import envelope_from_message
-        envelope = envelope_from_message(message,now=self.now())
+        if received_at is None:
+            received_at = self.clock()
+        envelope = envelope_from_message(message,now=received_utc or self.now())
         reference=getattr(message,'reference',None)
         resolved=getattr(reference,'resolved',None)
         source_channel=getattr(reference,'channel_id',None) or message.channel.id
         source_guild=getattr(reference,'guild_id',None) or message.guild.id
         resolved_bot=(str(getattr(getattr(resolved,'author',None),'id',''))==str(getattr(getattr(self.bot,'user',None),'id','bot'))
                       and str(source_channel)==str(message.channel.id) and str(source_guild)==str(message.guild.id))
-        return self.observe(envelope,message,mentioned or resolved_bot)
+        return self.observe(envelope,message,mentioned or resolved_bot,received_at=received_at)
 
     def _persist(self,envelope):
         if self.journal is False:
             return envelope
         return self.journal.ingest(envelope,backfill=envelope.ingestion_mode != 'live')
 
-    def observe(self,envelope,message=None,mentioned=False):
-        started = self.clock()
+    def observe(self,envelope,message=None,mentioned=False,*,received_at=None):
+        started = self.clock() if received_at is None else received_at
         if self.closed:
             return None
         if envelope.scope.key not in self._warm_scopes:
@@ -137,25 +162,23 @@ class LunaChat:
         direct = addressed(envelope.text,mentioned or bot_id in envelope.mentioned_user_ids,reply_bot)
         policy = participation(envelope,direct=direct,ambient_allowed=self.cadence.ambient_allowed(),
                                mode=self.settings.get('participation_mode','selective'))
-        self.bot.write_status(last_chat_decision={'decision':policy.decision,'reason_code':policy.reason_code,'checked_utc':stamp()})
+        self._status(last_chat_decision={'decision':policy.decision,'reason_code':policy.reason_code,'checked_utc':stamp()})
         if envelope.ingestion_mode != 'live' or envelope.is_bot:
             return policy
         # Source timestamps, not replay receipt timestamps, bound live validity.
         try:
-            age=(self.now()-datetime.fromisoformat(envelope.created_at.replace('Z','+00:00'))).total_seconds()
+            received=datetime.fromisoformat(envelope.received_at.replace('Z','+00:00')) if envelope.received_at else self.now()
+            age=(received-datetime.fromisoformat(envelope.created_at.replace('Z','+00:00'))).total_seconds()
             if age > self.coordinator.max_age:
                 return replace(policy,decision='silence',reason_code='expired_request')
         except (ValueError,TypeError):
             return replace(policy,decision='silence',reason_code='invalid_source_time')
-        linked = self.coordinator._linked_turn(envelope)
-        continuation = CONTINUATION.search(envelope.text)
-        if policy.decision == 'silence' and not (linked or CANCEL.search(envelope.text) or continuation or self.coordinator.can_attach_fragment(envelope)):
-            return policy
         gateway=max(0,age*1000)
         try:
-            turn=self.coordinator.enqueue(envelope,direct,wait_ms=policy.recheck_after_ms,gateway_ms=gateway)
+            turn=self.coordinator.enqueue(envelope,direct,wait_ms=policy.recheck_after_ms,gateway_ms=gateway,
+                                         received_at=started,allow_new=policy.decision!='silence')
         except QueueFull:
-            self.bot.write_status(last_chat_decision={'decision':'silence','reason_code':'queue_full','checked_utc':stamp()})
+            self._status(last_chat_decision={'decision':'silence','reason_code':'queue_full','checked_utc':stamp()})
             if direct and message is not None and (self._overflow_task is None or self._overflow_task.done()):
                 self._overflow_task=asyncio.create_task(self._overload_reply(message))
             return replace(policy,decision='silence',reason_code='queue_full')
@@ -171,17 +194,37 @@ class LunaChat:
             for key in tuple(mapping)[:-512]:
                 if key not in protected:
                     mapping.pop(key,None)
+        pending={turn.turn_id for turn in self.coordinator.turns.values() if turn.state in ('queued','generating')}
+        for turn_id in self._turn_profiles.keys() - pending:
+            self._turn_profiles.pop(turn_id,None)
 
     def edited(self,envelope):
         saved=self._persist(envelope)
         if saved is not None:
+            self.revalidated(saved.scope, saved.message_id, saved.revision)
             self.coordinator.observe(saved)
             if self.media is not None and saved.media:
                 self.media.submit(saved)
             self._wake.set()
         return saved
 
+    def invalidate(self,scope,message_id):
+        key = (scope.key, str(message_id))
+        self._invalidated[key] = object()
+        self._wake.set()
+
+    def invalidation(self,scope,message_id):
+        return self._invalidated.get((scope.key, str(message_id)))
+
+    def revalidated(self,scope,message_id,revision,*,invalidation=_UNSPECIFIED):
+        key = (scope.key, str(message_id))
+        current = self.journal.active(scope, message_id) if self.journal is not False else None
+        if current is not None and current.revision == revision:
+            if invalidation is _UNSPECIFIED or self._invalidated.get(key) is invalidation:
+                self._invalidated.pop(key, None)
+
     def deleted(self,scope,message_id):
+        self._invalidated.pop((scope.key, str(message_id)), None)
         if self.journal is not False:
             self.journal.delete(scope,str(message_id))
         self.coordinator.delete(scope,str(message_id))
@@ -215,8 +258,24 @@ class LunaChat:
         if command_help:
             self._local_answers[snapshot.turn_id]=command_help
             return command_help
-        media_messages=[item for item in snapshot.messages if item.media]
-        if media_messages:
+        from courswatch.knowledge.service import is_own_media_request
+        course_classifier = getattr(self.knowledge, 'is_course_question', None)
+        course_question = bool(callable(course_classifier) and course_classifier(snapshot.goal, snapshot.scope))
+        own_media = is_own_media_request(snapshot.goal)
+        if own_media and not course_question and len(snapshot.requester_ids) != 1:
+            result = 'De quel message parles-tu ? Réponds directement au message qui contient le média.'
+            self._local_answers[snapshot.turn_id] = result
+            return result
+        media_messages = [item for item in snapshot.messages if item.media]
+        if own_media:
+            media_messages = [item for item in media_messages if item.author_id in snapshot.requester_ids]
+        trigger_media = [item for item in media_messages if item.message_id in snapshot.trigger_message_ids]
+        wants_media = _VISUAL_REQUEST.search(snapshot.goal) or (trigger_media and all(
+            not re.sub(r'<a?:\w+:\d+>|\[mention\]|\b(?:capitaine|haddock)\b|\W+', '', item.text, flags=re.I)
+            for item in trigger_media))
+        media_result = ''
+        if media_messages and wants_media and (not course_question or _EXPLICIT_VISUAL.search(snapshot.goal)):
+            from courswatch.media import observation_digest, observation_limitations
             observations=[]
             if self.media is not None:
                 resolver=getattr(self.brain,'vision_profile',None)
@@ -251,7 +310,7 @@ class LunaChat:
                     elif isinstance(row,str):
                         ocr.append(row)
                 animation=str(item.get('animation','')).strip()
-                limitations=' ; '.join(str(value) for value in item.get('limitations',()) if value)
+                limitations=' ; '.join(str(value) for value in observation_limitations(item) if value)
                 details=' — '.join(value for value in (description,'Texte lu : '+' ; '.join(ocr) if ocr else '',animation,
                     'Limites : '+limitations if limitations else '') if value)
                 if not details:
@@ -270,12 +329,8 @@ class LunaChat:
                 if len('\n'.join([*lines,line]))>1700:
                     continue
                 lines.append(line)
-                canonical=item
                 media_id=str(item.get('media_id',''))
-                if self.journal is not False:
-                    current=self.journal.observations(snapshot.scope,source_message.message_id,media_id)
-                    canonical=next((row['observation'] for row in current if row['observation'].get('status')=='ready'),item)
-                observation_hash=hashlib.sha256(json.dumps(canonical,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+                observation_hash=observation_digest(item)
                 proofs.append(Evidence('media:'+source_message.message_id+':'+media_id,'media_observation',
                     snapshot.scope,json.dumps([source_message.message_id,media_id]),source_message.source_url,
                     source_message.display_name,details,str(source_message.revision)+':'+observation_hash,
@@ -287,17 +342,26 @@ class LunaChat:
             result='\n'.join(lines) if lines else (oversized if ready else unavailable)
             if proofs:
                 self._evidence[snapshot.turn_id]=EvidenceBundle(evidence=tuple(proofs))
-            self._local_answers[snapshot.turn_id]=result
-            return result
+            if not course_question:
+                self._local_answers[snapshot.turn_id]=result
+                return result
+            media_result = result
         if self.knowledge is not False:
             try:
-                bundle=await asyncio.to_thread(self.knowledge.query,snapshot.scope,snapshot.goal,budget_chars=7000)
+                if course_question or own_media:
+                    request = RetrievalRequest(snapshot.scope, snapshot.goal,
+                        intent='course' if course_question else 'conversation',
+                        author_id=None if course_question else snapshot.requester_ids[0])
+                    bundle = await asyncio.to_thread(self.knowledge.query, request)
+                else:
+                    bundle=await asyncio.to_thread(self.knowledge.query,snapshot.scope,snapshot.goal,budget_chars=7000)
             except (OSError,ValueError,sqlite3.Error):
                 result='La recherche des sources est indisponible pour le moment. Je ne peux pas confirmer cette information.'
                 self._local_answers[snapshot.turn_id]=result
                 return result
+            media_bundle = self._evidence.get(snapshot.turn_id)
             self._evidence[snapshot.turn_id]=bundle
-            if bundle.evidence or bundle.clarification or (bundle.coverage and re.search(
+            if bundle.evidence or bundle.clarification or course_question or own_media or (bundle.coverage and re.search(
                     r'\b(aait|aitdm|bdfa|sos|cours|projet|deadline|rendu|quand|date|souviens|souvenir|image|gif|emoji)\b',snapshot.goal,re.I)):
                 from courswatch.knowledge import render_answer
                 result=render_answer(bundle)
@@ -311,6 +375,11 @@ class LunaChat:
                     self._evidence[snapshot.turn_id]=bundle
                     result=render_answer(bundle) if chosen else 'Les preuves sont trop longues pour une réponse unique. Précise le projet ou le passage que tu veux vérifier.'
                 self._local_answers[snapshot.turn_id]=result
+                if media_result and len(result) + 2 + len(media_result) <= 1700:
+                    dependencies = media_bundle.evidence if media_bundle else ()
+                    self._evidence[snapshot.turn_id] = replace(bundle, dependencies=bundle.dependencies + dependencies)
+                    result += '\n\n' + media_result
+                    self._local_answers[snapshot.turn_id] = result
                 return result
         if self.journal is False:
             return ''
@@ -364,11 +433,10 @@ class LunaChat:
                   'checked_utc':stamp()}
         if gateway is not None:
             record['gateway_ms'] = round(gateway,1)
-        try:
-            self.bot.write_status(last_chat_timing=record)
-        except OSError:
-            # Diagnostics must not turn a delivered reply into a callback failure.
-            pass
+        fields = {'last_chat_timing':record}
+        if record.get('discarded_request') and record.get('call_id') is not None:
+            fields['last_discarded_chat_timing'] = record
+        self._status(**fields)
 
     async def _wait(self,delay):
         delay=round(delay,9)
@@ -386,30 +454,44 @@ class LunaChat:
                     task.cancel()
             await asyncio.gather(sleeper,wake,return_exceptions=True)
 
-    async def _valid(self,snapshot,message,bundle=None):
-        if not self.coordinator.valid(snapshot):
+    def _snapshot_current(self,snapshot,*,check_pending=False):
+        if self.closed or not self.coordinator.valid(snapshot):
             return False
         if self.journal is not False:
             for identity,revision in snapshot.dependencies:
                 active=self.journal.active(snapshot.scope,identity)
                 if active is None or active.deleted or active.revision != revision:
                     return False
+                if check_pending and self.invalidation(snapshot.scope, identity) is not None:
+                    return False
+        return True
+
+    async def _valid(self,snapshot,message,bundle=None,*,publishing=True):
+        if not self._snapshot_current(snapshot):
+            return False
         if bundle is not None and self.knowledge is not False:
             if not await asyncio.to_thread(self.knowledge.revalidate,snapshot.scope,bundle):
                 return False
-        evidence_allowed=getattr(self.bot,'conversation_evidence_allowed',None)
-        if bundle is not None and bundle.evidence and callable(evidence_allowed) and not await evidence_allowed(bundle):
-            return False
-        allowed=getattr(self.bot,'conversation_publish_allowed',None)
-        if callable(allowed) and not await allowed(message):
-            return False
+        dependencies_allowed = getattr(self.bot, 'conversation_dependencies_allowed', None)
+        if callable(dependencies_allowed):
+            if not await dependencies_allowed(snapshot, bundle, message, publishing=publishing):
+                return False
+        else:
+            evidence_allowed=getattr(self.bot,'conversation_evidence_allowed',None)
+            if bundle is not None and (bundle.evidence or bundle.dependencies) and callable(evidence_allowed) and not await evidence_allowed(bundle):
+                return False
+            allowed=getattr(self.bot,'conversation_publish_allowed',None)
+            if publishing and callable(allowed) and not await allowed(message):
+                return False
         # Asynchronous permission/source checks can themselves receive a correction.
-        if not self.coordinator.valid(snapshot):
+        if not self._snapshot_current(snapshot, check_pending=True):
             return False
-        if self.journal is not False:
-            for identity,revision in snapshot.dependencies:
-                active=self.journal.active(snapshot.scope,identity)
-                if active is None or active.deleted or active.revision!=revision:
+        if bundle is not None:
+            for evidence in (*bundle.evidence, *bundle.dependencies):
+                identity = evidence.source_id
+                if evidence.kind == 'media_observation':
+                    identity = json.loads(identity)[0]
+                if evidence.kind in ('conversation', 'media_observation') and self.invalidation(snapshot.scope, identity) is not None:
                     return False
         message_allowed=getattr(self.bot,'conversation_message_allowed',None)
         if callable(message_allowed) and not message_allowed(message):
@@ -425,8 +507,21 @@ class LunaChat:
         async with self.model_lock:
             timing['model_lock_ms']=round(max(0,self.clock()-queued)*1000,1)
             started=self.clock()
+            request_options = {'request':snapshot, 'profile':profile}
+            message = self._messages.get((snapshot.scope.key, snapshot.reply_target_id))
+            if message is not None:
+                bundle = self._evidence.get(snapshot.turn_id)
+                async def before_dispatch():
+                    if not direct and self.coordinator.pending_direct:
+                        return False
+                    return await self._valid(snapshot, message, bundle, publishing=False)
+                if isinstance(self.brain, LunaBrain):
+                    loop = asyncio.get_running_loop()
+                    request_options['before_dispatch'] = lambda: asyncio.run_coroutine_threadsafe(before_dispatch(), loop).result()
+                elif not await before_dispatch():
+                    raise LunaError('request_invalidated')
             worker=asyncio.create_task(asyncio.to_thread(self.brain.decide,snapshot.as_context(),direct,
-                self.bot.voice_samples,facts,request=snapshot,profile=profile))
+                self.bot.voice_samples,facts,**request_options))
             try:
                 # Cancelling a coroutine does not terminate urllib in its worker thread.
                 # Track it until settlement before allowing this service to close.
@@ -436,6 +531,16 @@ class LunaChat:
                 raise
             finally:
                 timing['model_ms']=round(max(0,self.clock()-started)*1000,1)
+
+    @staticmethod
+    def _record_model_timing(timing, result):
+        for name,value in getattr(result,'metrics',{}).items():
+            if name in ('ttft_ms','api_ms','input_tokens','output_tokens','total_tokens','cached_input_tokens','output_tps',
+                        'provider_queue_ms') and isinstance(value,(int,float)):
+                timing[name]=round(value,2)
+            elif name in ('model_profile_id','provider','requested_model_id','resolved_model_id','resolved_model_revision',
+                          'profile_config_version','require_zdr','unknown_usage','call_id'):
+                timing[name]=value
 
     async def run(self):
         try:
@@ -468,7 +573,9 @@ class LunaChat:
                     try:
                         async with self.typing(message,turn.direct):
                             capture=getattr(self.brain,'capture_profile',None)
-                            profile=capture() if callable(capture) else None
+                            if turn.turn_id not in self._turn_profiles:
+                                self._turn_profiles[turn.turn_id]=capture() if callable(capture) else None
+                            profile = self._turn_profiles[turn.turn_id]
                             started=self.clock()
                             facts=await self.facts(snapshot,profile=profile) if turn.direct else ''
                             timing['retrieval_ms']=round(max(0,self.clock()-started)*1000,1)
@@ -502,6 +609,11 @@ class LunaChat:
                         decision=MeasuredResult({'action':'text','reply':reply,'sample_id':'none'},local_metrics())
                         conversation=False
                     except LunaError as error:
+                        self._record_model_timing(timing, error)
+                        if error.code == 'request_invalidated':
+                            timing['discarded_request']=True
+                            timing['requeued_request']=self.coordinator.retry(turn)
+                            continue
                         response_problem=error.code in RESPONSE_ERRORS or error.code in ('capability_unavailable','input_limit','invalid_media','policy_mismatch','payload_too_large','http_400','http_422')
                         if not response_problem and error.code not in ('circuit_open','service_circuit_open'):
                             self.retry_after=self.clock()+60
@@ -513,6 +625,7 @@ class LunaChat:
                         fallback=(REFUSAL_REPLY if error.code=='model_refusal' else REPHRASE_REPLY) if response_problem else OFFLINE_REPLY
                         decision=MeasuredResult({'action':'text','reply':fallback,'sample_id':'none'},error.metrics)
                         conversation=False
+                    self._record_model_timing(timing, decision)
                     async with self.publication_lock:
                         started=self.clock()
                         valid=await self._valid(snapshot,message,self._evidence.get(turn.turn_id))
@@ -529,12 +642,6 @@ class LunaChat:
                         if decision['action']=='ignore':
                             self.coordinator.finish(turn,'silence')
                             continue
-                        for name,value in getattr(decision,'metrics',{}).items():
-                            if name in ('ttft_ms','api_ms','input_tokens','output_tokens','total_tokens','cached_input_tokens','output_tps') and isinstance(value,(int,float)):
-                                timing[name]=round(value,2)
-                            elif name in ('model_profile_id','provider','requested_model_id','resolved_model_id',
-                                          'resolved_model_revision','profile_config_version','require_zdr','unknown_usage'):
-                                timing[name]=value
                         dedupe=hashlib.sha256(json.dumps([snapshot.scope.key,snapshot.trigger_message_ids,
                             snapshot.reply_target_id,snapshot.dependencies,snapshot.goal],ensure_ascii=False).encode()).hexdigest()
                         if self.journal is not False:
@@ -575,6 +682,7 @@ class LunaChat:
                     if turn.state not in ('queued','generating'):
                         self._evidence.pop(turn.turn_id,None)
                         self._local_answers.pop(turn.turn_id,None)
+                        self._turn_profiles.pop(turn.turn_id,None)
                     self._prune_transports()
                     self.record_timing(timing,turn.received_at,turn.gateway_ms)
         except asyncio.CancelledError:
@@ -602,7 +710,13 @@ class LunaChat:
                     if result and isinstance(result[0],dict) and result[0].get('id'):
                         self._last_transport_receipt=int(result[0]['id'])
                     raise
-                reply_id,format_used = int(receipt['id']),'voice'
+                try:
+                    reply_id = int(receipt['id'])
+                except (KeyError, ValueError, TypeError):
+                    self._status(last_voice_error={'error_type':'InvalidVoiceReceipt',
+                                                  'outcome':'uncertain','checked_utc':stamp()})
+                    return None
+                format_used = 'voice'
                 self._last_transport_receipt=reply_id
                 self._last_delivery_useful_at=self.clock()
                 self.bot.last_voice_sample = sample.id
@@ -610,8 +724,9 @@ class LunaChat:
                 # A missing/ambiguous receipt may still correspond to a delivered
                 # voice message. Only a known local validation or 4xx rejection
                 # permits a text fallback; never duplicate an uncertain upload.
-                definite=isinstance(error,ValueError) or bool(re.fullmatch(r'Discord voice HTTP 4\d\d|Discord voice rate limit',str(error)))
-                self.bot.write_status(last_voice_error={'error_type':type(error).__name__,
+                definite=(isinstance(error,ValueError) and not isinstance(error,json.JSONDecodeError)
+                    or bool(re.fullmatch(r'Discord voice HTTP 4\d\d|Discord voice rate limit',str(error))))
+                self._status(last_voice_error={'error_type':type(error).__name__,
                     'outcome':'rejected' if definite else 'uncertain','checked_utc':stamp()})
                 if not definite:
                     return None
@@ -626,7 +741,7 @@ class LunaChat:
                 self._last_transport_receipt=reply_id
                 self._last_delivery_useful_at=self.clock()
             except discord.HTTPException:
-                self.bot.write_status(last_luna_delivery_error=stamp())
+                self._status(last_luna_delivery_error=stamp())
                 return
         elif debug:
             # Native Discord voice messages reject text content. Keep their
@@ -636,7 +751,7 @@ class LunaChat:
                     reference=discord.MessageReference(message_id=reply_id,channel_id=message.channel.id,fail_if_not_exists=False),
                     mention_author=False,allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException as error:
-                self.bot.write_status(last_chat_metrics_error={'error_type':type(error).__name__,'checked_utc':stamp()})
+                self._status(last_chat_metrics_error={'error_type':type(error).__name__,'checked_utc':stamp()})
         self.memory.add('Haddock',('[Extrait vocal : '+sample.id+']' if format_used == 'voice' else decision['reply']),
                         reply_id,is_bot=True)
         if reply_id is not None and self.journal is not False:
@@ -650,7 +765,7 @@ class LunaChat:
             if saved is not None:
                 self.coordinator.observe(saved)
         self.cadence.sent(direct,message.author.id,conversation)
-        self.bot.write_status(last_luna_reply={'sent_utc':stamp(),'reply_id':str(reply_id),
+        self._status(last_luna_reply={'sent_utc':stamp(),'reply_id':str(reply_id),
             'mode':'direct' if direct else 'ambient','format':format_used},last_luna_delivery_error=None)
 
         return reply_id

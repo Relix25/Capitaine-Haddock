@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import unittest
 
-from courswatch.conversation.contracts import MessageEnvelope, Scope
+from courswatch.conversation.contracts import MediaDescriptor, MessageEnvelope, Scope
 from courswatch.conversation.coordinator import Coordinator, QueueFull
 from courswatch.conversation.participation import decide
 
@@ -57,7 +57,13 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(turn.reply_target_id,'1')
         self.assertFalse(self.coordinator.valid(old))
         self.assertTrue(self.coordinator.retry(turn))
-        self.assertEqual(len(self.coordinator.freeze(turn).messages),2)
+        revised = self.coordinator.freeze(turn)
+        self.assertEqual(len(revised.messages), 2)
+        self.assertEqual(revised.trigger_message_ids, ('1',))
+        self.assertIn('le sujet est reporté', revised.goal)
+        self.coordinator.observe(replace(addition, text='Précision : le projet BDFA est reporté.', revision=2))
+        self.assertEqual(self.coordinator.freeze(turn).goal, 'Haddock, date du projet AAIT ?')
+        self.assertFalse(self.coordinator.valid(revised))
 
     def test_two_authors_same_exact_question_can_share_a_target(self):
         first=self.add(self.message())
@@ -65,6 +71,34 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIs(first,shared)
         self.assertEqual(shared.requester_ids,['alice','bob'])
         self.assertEqual(shared.reply_target_id,'1')
+
+    def test_identical_media_questions_keep_distinct_occurrences(self):
+        media = (MediaDescriptor('asset', 'image', 'https://cdn.discordapp.com/attachments/1/2/a.png'),)
+        first = self.add(self.message(text='Haddock, décris cette image.', media=media))
+        second = self.add(self.message('2', 'bob', 'Haddock, décris cette image.', media=media))
+        self.assertIsNot(first, second)
+
+    def test_linked_independent_question_keeps_own_requester_and_target(self):
+        original = self.add(self.message())
+        original.state = 'generating'
+        snapshot = self.coordinator.freeze(original)
+        followup = self.add(self.message('2', 'bob', 'Haddock, où se trouve la salle BDFA ?', reply_to_message_id='1'))
+        self.assertIsNot(original, followup)
+        self.assertEqual((original.requester_ids, followup.requester_ids), (['alice'], ['bob']))
+        self.assertEqual((original.reply_target_id, followup.reply_target_id), ('1', '2'))
+        self.assertTrue(self.coordinator.valid(snapshot))
+
+    def test_withdrawal_does_not_withdraw_shared_request_for_other_author(self):
+        turn = self.add(self.message())
+        self.add(self.message('2', 'bob'))
+        snapshot = self.coordinator.freeze(turn)
+        self.add(self.message('3', 'alice', 'Laisse tomber.', reply_to_message_id='1'), False)
+        self.assertFalse(self.coordinator.valid(snapshot))
+        self.assertTrue(self.coordinator.retry(turn))
+        current = self.coordinator.freeze(turn)
+        self.assertEqual(current.requester_ids, ('bob',))
+        self.assertEqual(current.reply_target_id, '2')
+        self.assertEqual(current.trigger_message_ids, ('2',))
 
     def test_unrelated_message_does_not_invalidate_snapshot(self):
         turn=self.add(self.message())
@@ -156,14 +190,36 @@ class CoordinatorTests(unittest.TestCase):
 
 
     def test_linked_ignorance_questions_or_emoji_do_not_resolve_request(self):
-        for text in ('Je ne sais pas.', 'Quelqu’un sait ?', '🤷', 'Bonne question !'):
+        for text in ('Je ne sais pas.', 'Quelqu’un sait ?', '🤷', 'Bonne question !', 'Merci !',
+                     'Laisse tomber.', 'J’ai cours lundi.', 'La date BDFA est le 20 novembre.'):
             with self.subTest(text=text):
                 self.setUp()
                 turn=self.add(self.message())
+                turn.state = 'generating'
+                snapshot = self.coordinator.freeze(turn)
                 self.add(self.message('2','bob',text,reply_to_message_id='1'),False)
-                self.assertEqual(turn.state,'queued')
-                self.assertTrue(self.coordinator.valid(self.coordinator.freeze(turn)))
-                self.assertEqual(turn.requester_ids,['alice'])
+                self.assertTrue(self.coordinator.valid(snapshot))
+                self.assertEqual(turn.requester_ids, ['alice'])
+
+    def test_silent_continuation_can_join_but_cannot_open_a_turn(self):
+        aside = self.message('2', text='Précision : le projet est celui de Crafter.')
+        self.coordinator.observe(aside)
+        self.assertIsNone(self.coordinator.enqueue(aside, False, allow_new=False))
+        turn = self.add(self.message(text='Haddock, je voulais savoir…'))
+        self.assertIs(self.coordinator.enqueue(aside, False, allow_new=False), turn)
+        self.assertIn('Crafter', self.coordinator.freeze(turn).goal)
+
+    def test_late_source_expires_during_generation(self):
+        request = self.message()
+        self.coordinator.observe(request)
+        turn = self.coordinator.enqueue(request, True, gateway_ms=119_000, received_at=99.75)
+        self.assertEqual(turn.expires_at, 100.75)
+        self.assertEqual(turn.received_at, 99.75)
+        turn.state = 'generating'
+        snapshot = self.coordinator.freeze(turn)
+        self.now[0] = 101
+        self.assertFalse(self.coordinator.valid(snapshot))
+        self.assertFalse(self.coordinator.retry(turn))
 
 if __name__=='__main__':
     unittest.main()

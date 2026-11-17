@@ -22,9 +22,10 @@ class SettingsModal(discord.ui.Modal):
     def __init__(self, bot, owner_id):
         super().__init__(title='Réglages de Haddock', timeout=300)
         self.bot, self.owner_id = bot, owner_id
+        configured_zdr = getattr(bot.luna, 'model_defaults', {}).get('require_zdr') is True
         self.model = discord.ui.Select(custom_id='haddock:settings:model',min_values=1,max_values=1,
             options=[discord.SelectOption(label=label,value=key,
-                description='ZDR exigé' if MODEL_CHOICES[key]['require_zdr'] else 'ZDR non exigé',
+                description='ZDR exigé' if configured_zdr or MODEL_CHOICES[key]['require_zdr'] else 'ZDR non exigé',
                 default=bot.luna.brain.model == MODEL_CHOICES[key]['model'])
                 for key,label in MODEL_LABELS.items()])
         self.debug = discord.ui.Select(custom_id='haddock:settings:debug',min_values=1,max_values=1,

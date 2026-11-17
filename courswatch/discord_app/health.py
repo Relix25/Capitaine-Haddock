@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from courswatch.reminders import reminder_events
 from courswatch.discord_app.emojis import icon, image_url
 from courswatch.conversation.brain import usage_totals
-from courswatch.conversation.models import effective_settings
+from courswatch.conversation.models import effective_settings, resolve_profile
 
 TZ = ZoneInfo('Europe/Bucharest')
 UNITS = ['cours-watch-bot.service','cours-watch.service','cours-watch.timer','cours-watch-session.timer','cours-watch-session.service','cours-watch-esn.timer','cours-watch-esn.service']
@@ -176,24 +176,30 @@ def build_status_snapshot(data_dir, config, bot_ready, latency, manual_running=F
         issues.append('Rappel du jour non confirmé')
     next_check = instant(timer.get('NextElapseUSecRealtime')) if automatic else None
     luna = {}
-    luna_config = effective_settings(data_dir,config.get('discord',{}).get('luna',{}))
+    luna_config = config.get('discord',{}).get('luna',{})
     if luna_config.get('enabled'):
-        luna = read_json(data_dir / 'reports/luna-status.json')
-        provider = luna_config.get('provider','openai')
-        default_model = 'deepseek/deepseek-v4.1-flash' if provider == 'commandcode' else 'gpt-6-luna'
-        luna.update(provider=provider,model=luna_config.get('model',default_model),
-                    daily_token_limit=luna_config.get('daily_token_limit',1_000_000))
         try:
-            with closing(sqlite3.connect('file:' + str(data_dir / 'luna-usage.db') + '?mode=ro',uri=True)) as db:
-                totals = usage_totals(db,day)
-                blocked = bool(db.execute('SELECT 1 FROM blocked_days WHERE day=?',(day,)).fetchone())
-            luna.update(**totals,remaining_tokens=max(0,luna['daily_token_limit']-totals['budget_used_tokens']),blocked=blocked)
-            if blocked:
-                luna['status'] = 'daily_limit'
-            elif luna.get('status') == 'daily_limit':
-                luna['status'] = 'ready'
-        except sqlite3.Error:
-            luna.update(status='unavailable',used_tokens=None)
+            luna_config = effective_settings(data_dir,luna_config)
+            profile = resolve_profile(luna_config)
+        except (ValueError, OSError):
+            luna = {'status':'invalid_config'}
+        else:
+            luna = read_json(data_dir / 'reports/luna-status.json')
+            limit = luna_config.get('daily_token_limit',1_000_000)
+            luna.update(provider=profile.provider,model=profile.requested_model_id,
+                        require_zdr=profile.require_zdr,daily_token_limit=limit)
+            try:
+                with closing(sqlite3.connect('file:' + str(data_dir / 'luna-usage.db') + '?mode=ro',uri=True)) as db:
+                    totals = usage_totals(db,day)
+                    blocked = bool(db.execute('SELECT 1 FROM blocked_days WHERE day=?',(day,)).fetchone())
+                blocked = blocked or totals['used_tokens'] >= limit
+                luna.update(**totals,remaining_tokens=max(0,limit-totals['budget_used_tokens']),blocked=blocked)
+                if blocked:
+                    luna['status'] = 'daily_limit'
+                elif luna.get('status') == 'daily_limit':
+                    luna['status'] = 'ready'
+            except sqlite3.Error:
+                luna.update(status='unavailable',used_tokens=None)
     esn = {}
     if config.get('esn_file'):
         settings = read_json(Path(config['esn_file']))
@@ -285,14 +291,18 @@ def status_embed(snapshot):
         label = {'ready':'Disponible','daily_limit':'En cale sèche · quota quotidien atteint',
                  'missing_key':'Clé API absente','error':'Liaison API à vérifier',
                  'degraded':'Dernière réponse inexploitable · nouvel essai possible',
-                 'unavailable':'Compteur indisponible'}.get(luna.get('status'),'État à vérifier')
+                 'unavailable':'Compteur indisponible','invalid_config':'Configuration du modèle invalide'
+                 }.get(luna.get('status'),'État à vérifier')
         usage = ('{:,} / {:,}'.format(luna['used_tokens'],luna['daily_token_limit']).replace(',',' ')
                  if luna.get('used_tokens') is not None else 'non disponible')
-        provider = {'commandcode':'CommandCode','openai':'OpenAI'}.get(luna.get('provider'),'')
-        value = label+' · '+(provider+' · ' if provider else '')+luna['model']+'\nTokens confirmés aujourd’hui : **'+usage+'** (entrée + sortie, cache inclus).'
+        value = label
+        if luna.get('model'):
+            value += ' · CommandCode · '+luna['model']
+            value += '\nTokens confirmés aujourd’hui : **'+usage+'** (entrée + sortie, cache inclus).'
         if luna.get('reserved_tokens',0):
             value += '\nRéservés / non confirmés : **'+format(luna['reserved_tokens'],',').replace(',',' ')+'** · consommation encore inconnue.'
-        value += '\nRemise à zéro à minuit, heure de Bucarest.'
+        if luna.get('model'):
+            value += '\nRemise à zéro à minuit, heure de Bucarest.'
         embed['fields'].append({'name':'Conversations · Haddock','value':value,'inline':False})
     if thumbnail:
         embed['thumbnail'] = {'url':thumbnail}

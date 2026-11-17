@@ -148,6 +148,7 @@ class EvidenceBundle:
     clarification: str = ''
     coverage: str = ''
     gaps: tuple[str, ...] = ()
+    dependencies: tuple[Evidence, ...] = ()
 
 
 @dataclass(frozen=True)

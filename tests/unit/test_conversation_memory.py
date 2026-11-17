@@ -23,6 +23,28 @@ class JournalTests(unittest.TestCase):
                                 self.moment.isoformat(), source_url='https://discord.com/channels/guild/allowed/' + identifier)
         return replace(value, **changes)
 
+    def test_same_timestamp_rest_update_invalidates_old_media_but_replay_cannot_revert(self):
+        old_media = MediaDescriptor('embed:0:image', 'image', 'https://cdn.discordapp.com/a.png')
+        new_media = replace(old_media, url='https://cdn.discordapp.com/b.png')
+        original = self.message(media=(old_media,))
+        self.journal.ingest(original)
+        self.assertTrue(self.journal.save_observation(self.scope, 'one', 1, old_media.media_id,
+                                                      {'status':'ready', 'description':'old image'}))
+        refreshed = replace(original, media=(new_media,), event_kind='rest')
+        self.assertEqual(self.journal.ingest(refreshed, backfill=True).revision, 2)
+        self.assertIsNone(self.journal.ingest(original))
+        self.assertFalse(self.journal.observations(self.scope, 'one'))
+
+    def test_page_reconciles_only_snowflakes_it_covered_at_the_shared_timestamp(self):
+        for identity in ('10', '11', '12'):
+            self.journal.ingest(self.message(identity))
+        instant = self.moment.isoformat()
+        self.assertEqual(self.journal.reconcile_window(self.scope, instant, instant, ('11',),
+                         after_message_id=9, through_message_id=11, observed_before=instant), 1)
+        self.assertIsNone(self.journal.active(self.scope, '10'))
+        self.assertIsNotNone(self.journal.active(self.scope, '11'))
+        self.assertIsNotNone(self.journal.active(self.scope, '12'))
+
     def test_recall_collective_discussion_after_seven_days_and_restart(self):
         first = self.message()
         second = self.message('two', 'bob', 'AAIT : proposition acceptée', reply_to_message_id='one')

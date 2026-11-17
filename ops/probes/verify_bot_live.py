@@ -5,10 +5,17 @@ import subprocess
 import urllib.request
 from courswatch.runtime import load_discord_secrets
 from courswatch.conversation.brain import PERSONA_VERSION
-from courswatch.conversation.models import effective_settings
+from courswatch.conversation.models import effective_settings, resolve_profile
 
 def main():
     config = json.loads(Path('/etc/cours-watch/config.json').read_text())['discord']
+    profile = None
+    if config.get('luna',{}).get('enabled'):
+        try:
+            settings = effective_settings('/var/lib/cours-watch',config['luna'])
+            profile = resolve_profile(settings)
+        except (ValueError, OSError):
+            raise SystemExit('Invalid conversation model configuration') from None
     token = load_discord_secrets()['DISCORD_BOT_TOKEN']
 
 
@@ -58,21 +65,19 @@ def main():
              'easter_egg_cooldown_seconds':config.get('easter_egg',{}).get('cooldown_seconds'),
              'last_easter_egg':status.get('last_easter_egg'),'voice_enabled':status.get('voice_enabled'),
              'voice_samples':status.get('voice_samples'),'voice_probability':status.get('voice_probability')}
-    if config.get('luna',{}).get('enabled'):
-        settings = effective_settings('/var/lib/cours-watch',config['luna'])
-        provider = settings.get('provider','openai')
-        default_model = 'deepseek/deepseek-v4.1-flash' if provider == 'commandcode' else 'gpt-6-luna'
+    if profile is not None:
         luna = json.loads(Path('/var/lib/cours-watch/reports/luna-status.json').read_text())
-        if (not status.get('luna_enabled') or status.get('luna_model') != settings.get('model',default_model)
-                or status.get('luna_provider','openai') != provider or luna.get('provider','openai') != provider
+        if (not status.get('luna_enabled') or status.get('luna_model') != profile.requested_model_id
+                or status.get('luna_provider') != profile.provider or luna.get('provider') != profile.provider
+                or luna.get('model') != profile.requested_model_id
                 or status.get('luna_persona') != PERSONA_VERSION or luna.get('persona_version') != PERSONA_VERSION
                 or luna.get('daily_token_limit') != settings.get('daily_token_limit',1_000_000)
-                or luna.get('require_zdr',True) != settings.get('require_zdr',True)
+                or luna.get('require_zdr') is not profile.require_zdr
                 or status.get('luna_debug_enabled') != settings.get('debug',True)
                 or luna.get('debug_enabled') != settings.get('debug',True)
                 or luna.get('status') not in ('ready','daily_limit')):
             raise SystemExit('Luna conversation mode or daily token ceiling is not ready')
-        proof.update(luna_enabled=True,luna_provider=provider,luna_model=status['luna_model'],luna_require_zdr=luna['require_zdr'],
+        proof.update(luna_enabled=True,luna_provider=profile.provider,luna_model=status['luna_model'],luna_require_zdr=luna['require_zdr'],
                      luna_debug_enabled=status['luna_debug_enabled'],luna_daily_token_limit=luna['daily_token_limit'],
                      luna_status=luna['status'],luna_used_tokens=luna['used_tokens'],luna_persona=status['luna_persona'])
     output = Path('/tmp/cours-watch-bot-proof.json')

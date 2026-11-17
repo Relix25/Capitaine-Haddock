@@ -128,6 +128,7 @@ class HealthTests(unittest.TestCase):
 
     def test_commandcode_status_displays_provider_model_and_ten_million_ceiling(self):
         self.config['discord']['luna'] = {'enabled':True,'provider':'commandcode',
+                                         'model':'deepseek/deepseek-v4.1-flash',
                                          'daily_token_limit':10_000_000}
         ledger = TokenBudget(self.root/'luna-usage.db',10_000_000,now=lambda:self.now)
         identity = ledger.reserve(100,'direct')
@@ -144,7 +145,8 @@ class HealthTests(unittest.TestCase):
         self.assertIn('Conversations · Haddock',card)
 
     def test_luna_status_reads_today_ledger_without_changing_it_and_resets_at_midnight(self):
-        self.config['discord']['luna'] = {'enabled':True,'daily_token_limit':100,'model':'gpt-6-luna'}
+        self.config['discord']['luna'] = {'enabled':True,'daily_token_limit':100,
+                                         'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'}
         ledger = TokenBudget(self.root/'luna-usage.db',100,now=lambda:self.now)
         identity = ledger.reserve(100,'direct')
         ledger.settle(identity,80,20)
@@ -160,7 +162,8 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(tomorrow['luna']['status'],'ready')
 
     def test_luna_status_does_not_present_an_in_flight_reservation_as_consumption(self):
-        self.config['discord']['luna'] = {'enabled':True,'daily_token_limit':100,'model':'gpt-6-luna'}
+        self.config['discord']['luna'] = {'enabled':True,'daily_token_limit':100,
+                                         'provider':'commandcode','model':'tencent/hy4-flash'}
         ledger = TokenBudget(self.root/'luna-usage.db',100,now=lambda:self.now)
         ledger.reserve(90,'direct')
         (self.root/'reports/luna-status.json').write_text(json.dumps({'status':'ready'}))
@@ -170,6 +173,16 @@ class HealthTests(unittest.TestCase):
         card = status_embed(snapshot)
         self.assertIn('0 / 100',str(card))
         self.assertIn('Réservés / non confirmés',str(card))
+
+    def test_invalid_profile_does_not_report_a_fallback_model(self):
+        self.config['discord']['luna'] = {'enabled':True,'provider':'commandcode'}
+        (self.root/'reports/luna-status.json').write_text(
+            json.dumps({'status':'ready','provider':'openai','model':'gpt-6-luna'}))
+        snapshot = self.snapshot()
+        self.assertEqual(snapshot['luna'], {'status':'invalid_config'})
+        card = str(status_embed(snapshot))
+        self.assertIn('Configuration du modèle invalide', card)
+        self.assertNotIn('gpt-6-luna', card)
 
 
 if __name__ == '__main__':

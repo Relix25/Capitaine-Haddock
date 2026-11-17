@@ -4,7 +4,7 @@ This module does not fetch anything. A URL, filename or emoji name is metadata,
 never evidence of the contents of an image.
 """
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from courswatch.conversation.contracts import MediaDescriptor
 
@@ -12,6 +12,25 @@ from courswatch.conversation.contracts import MediaDescriptor
 CUSTOM_EMOJI = re.compile(r'<(a?):([A-Za-z0-9_]{1,64}):(\d{2,30})>')
 PAGE_LINK = re.compile(r'https://(?:www\.)?(?:tenor\.com|giphy\.com)/[^\s<>]+', re.I)
 IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
+_DISCORD_MEDIA_HOSTS = frozenset(('cdn.discordapp.com', 'media.discordapp.net'))
+_DISCORD_SIGNATURE = frozenset(('ex', 'is', 'hm'))
+
+
+def media_identity(descriptor):
+    """Identify both the occurrence slot and the media referenced by that slot."""
+    source = descriptor.url
+    try:
+        url = urlsplit(source)
+    except ValueError:
+        url = None
+    if url and url.hostname in _DISCORD_MEDIA_HOSTS and url.path.startswith(('/attachments/', '/ephemeral-attachments/')):
+        # Discord rotates signed URL parameters without replacing the file. Keep
+        # all representation parameters and the full path, even for embeds.
+        query = tuple((key, value) for key, value in parse_qsl(url.query, keep_blank_values=True)
+                      if key not in _DISCORD_SIGNATURE)
+        source = (url.scheme, url.netloc, url.path, query, url.fragment)
+    return (descriptor.media_id, descriptor.position, descriptor.source_kind,
+            descriptor.kind, descriptor.animated, source)
 
 
 def _get(value, key, default=None):

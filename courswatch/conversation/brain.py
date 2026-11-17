@@ -1,7 +1,7 @@
 """Scoped CommandCode decisions; legacy Luna names preserve settings and quota paths."""
 import base64
 from collections import OrderedDict, deque
-from contextlib import closing
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -127,7 +127,7 @@ class TokenBudget:
     def day(self):
         return self.now().astimezone(TZ).date().isoformat()
 
-    def reserve(self,tokens,kind,profile=None):
+    def reserve(self,tokens,kind,profile=None,*,background=None):
         tokens = max(1,int(tokens))
         with closing(self.connect()) as db:
             db.execute('BEGIN IMMEDIATE')
@@ -135,7 +135,8 @@ class TokenBudget:
             used = db.execute('SELECT COALESCE(SUM(charged),0) FROM calls WHERE day=?',(day,)).fetchone()[0]
             confirmed = usage_totals(db,day)['used_tokens']
             blocked = db.execute('SELECT 1 FROM blocked_days WHERE day=?',(day,)).fetchone()
-            background = kind in ('ambient', 'vision', 'episode_summary')
+            if background is None:
+                background = kind in ('ambient', 'vision', 'episode_summary')
             ceiling = self.limit - (self.interactive_reserve if background else 0)
             if blocked or used + tokens > ceiling:
                 # A job too large for the remaining balance isn't an exhausted
@@ -277,17 +278,27 @@ class LunaBrain:
         self._status_lock = threading.RLock()
         self._circuit_lock = threading.Lock()
         self._profiles_lock = threading.RLock()
+        self._admission = threading.Condition()
+        self._admission_waiters = {}
+        self._provider_busy = False
         self._captured_configs = OrderedDict()
         self._issued_vision_profiles = OrderedDict()
         self.clock = time.monotonic
         self.retry_after = 0.0
         self.publish(('daily_limit' if self.budget.snapshot()['blocked'] else 'ready') if self.key else 'missing_key')
 
-    def capture_profile(self):
-        config = deepcopy({**self.config, 'provider':self.provider, 'model':self.model,
-                           'require_zdr':self.require_zdr})
-        profile = resolve_profile(config)
+    def use_profile(self, settings, profile):
+        """Install a previously validated selection atomically for new captures."""
         with self._profiles_lock:
+            self.config = dict(settings)
+            self.model = profile.requested_model_id
+            self.require_zdr = profile.require_zdr
+
+    def capture_profile(self):
+        with self._profiles_lock:
+            config = deepcopy({**self.config, 'provider':self.provider, 'model':self.model,
+                               'require_zdr':self.require_zdr})
+            profile = resolve_profile(config)
             # Object identity matters: two value-equal model profiles may have
             # different explicit routing configuration in their request.
             self._captured_configs[id(profile)] = (profile, config)
@@ -320,6 +331,26 @@ class LunaBrain:
         with self._circuit_lock:
             return self.clock() >= self.retry_after
 
+    @contextmanager
+    def _admit(self, priority):
+        """Serialize text and vision, serving equal priorities in arrival order."""
+        ticket = object()
+        with self._admission:
+            self._admission_waiters[ticket] = priority
+            try:
+                self._admission.wait_for(lambda: not self._provider_busy and
+                    min(self._admission_waiters, key=self._admission_waiters.__getitem__) is ticket)
+                self._provider_busy = True
+            finally:
+                del self._admission_waiters[ticket]
+                self._admission.notify_all()
+        try:
+            yield
+        finally:
+            with self._admission:
+                self._provider_busy = False
+                self._admission.notify_all()
+
     def _check_circuit(self, profile):
         with self._circuit_lock:
             remaining = self.retry_after - self.clock()
@@ -347,11 +378,16 @@ class LunaBrain:
 
     def publish(self,status,error_code=None,outcome=None,profile=None):
         with self._status_lock:
-            profile = profile or self.capture_profile()
-            report = {**self.budget.snapshot(),**self.profile_metrics(profile),
-                      'capabilities':asdict(profile.capabilities),
-                      'debug_enabled':self.config.get('debug',True),'persona_version':self.persona_version,'status':status,
+            with self._profiles_lock:
+                active = resolve_profile({**self.config, 'model':self.model,
+                                          'provider':self.provider, 'require_zdr':self.require_zdr})
+                debug = self.config.get('debug',True)
+            report = {**self.budget.snapshot(),**self.profile_metrics(active),
+                      'capabilities':asdict(active.capabilities),
+                      'debug_enabled':debug,'persona_version':self.persona_version,'status':status,
                       'checked_utc':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+            if profile is not None and profile != active:
+                report['last_call_profile'] = self.profile_metrics(profile)
             if error_code:
                 report['error_code'] = error_code
             if outcome:
@@ -392,7 +428,8 @@ class LunaBrain:
         except (OSError,ValueError):
             raise LunaError('connection_failed') from None
 
-    def _execute(self,payload,profile,kind,*,visual_tokens=0):
+    def _execute(self,payload,profile,kind,*,visual_tokens=0,image_url_bytes=0,
+                 before_dispatch=None,interactive=False):
         if not self.key:
             raise LunaError('missing_key',{**local_metrics(),**self.profile_metrics(profile)})
         self._check_circuit(profile)
@@ -403,18 +440,32 @@ class LunaBrain:
                 or not isinstance(profile.require_zdr,bool)
                 or (canonical == 'deepseek' and not profile.require_zdr)):
             raise LunaError('policy_mismatch')
-        encoded_size = len(json.dumps(payload,ensure_ascii=False).encode())
+        encoded_size = len(json.dumps({**payload,'stream':True},ensure_ascii=False).encode())
         if encoded_size > profile.capabilities.max_payload_bytes:
             raise LunaError('payload_too_large')
         # Text bound is conservative. Visual allowance is separate from the URL
         # or base64 byte count, and is settled against provider-reported usage.
-        bound = encoded_size + 4096 + payload['max_output_tokens'] + max(0,visual_tokens)
+        bound = encoded_size - image_url_bytes + 4096 + payload['max_output_tokens'] + visual_tokens
+        priority = (1 if interactive else 2) if kind == 'vision' else 0
+        queued = time.perf_counter()
+        with self._admit(priority):
+            admission = (time.perf_counter()-queued)*1000
+            self._check_circuit(profile)
+            if before_dispatch is not None and not before_dispatch():
+                raise LunaError('request_invalidated', {**self.profile_metrics(profile),
+                    **local_metrics(), 'provider_queue_ms':admission})
+            return self._call_reserved(payload, profile, kind, bound, admission,
+                                       interactive=interactive)
+
+    def _call_reserved(self, payload, profile, kind, bound, admission, *, interactive):
         try:
-            reservation = self.budget.reserve(bound,kind,profile)
+            reservation = self.budget.reserve(bound,kind,profile,
+                background=False if interactive else None)
         except BudgetExhausted:
             self.publish('daily_limit' if self.budget.snapshot()['blocked'] else 'deferred_budget',profile=profile)
             raise
         started = time.perf_counter()
+        accounting = {'call_id':reservation, 'provider_queue_ms':admission}
         try:
             if self._custom_transport or self.transport != self.request:
                 response = self.transport(payload)
@@ -423,7 +474,7 @@ class LunaBrain:
         except LunaError as error:
             known_unbilled = error.code in ('http_400','http_401','http_402','http_403','http_404','http_413','http_422','http_429',
                                              'payload_too_large','policy_mismatch','capability_unavailable','invalid_media')
-            error.metrics = {**self.profile_metrics(profile),'api_ms':(time.perf_counter()-started)*1000,
+            error.metrics = {**self.profile_metrics(profile), **accounting, 'api_ms':(time.perf_counter()-started)*1000,
                              'ttft_ms':None,'total_tokens':0 if known_unbilled else None,
                              'unknown_usage':not known_unbilled}
             self.budget.settle(reservation,status=error.code,known_usage=known_unbilled)
@@ -434,34 +485,36 @@ class LunaBrain:
             self.budget.settle(reservation,status='unknown_error',known_usage=False)
             self._record_failure('unknown_error')
             self.publish('error','unknown_error',profile=profile)
-            raise LunaError('unknown_error',{**self.profile_metrics(profile),'ttft_ms':None,
+            raise LunaError('unknown_error',{**self.profile_metrics(profile), **accounting, 'ttft_ms':None,
                 'api_ms':(time.perf_counter()-started)*1000,'total_tokens':None,'unknown_usage':True}) from None
         try:
             if not isinstance(response,dict):
                 raise ValueError('Invalid model envelope')
-            metrics = {**response_metrics(response,profile.requested_model_id,(time.perf_counter()-started)*1000),
-                       **self.profile_metrics(profile,response)}
             usage = response.get('usage') or {}
             if not isinstance(usage,dict):
                 raise ValueError('Invalid usage')
+            # Malformed optional details should not erase a confirmed total.
+            usage = {**usage, **{key:usage[key] if isinstance(usage.get(key),dict) else {}
+                                 for key in ('input_tokens_details','output_tokens_details')}}
+            measured = MeasuredResult({**response,'usage':usage}, getattr(response,'metrics',{}))
+            metrics = {**response_metrics(measured,profile.requested_model_id,(time.perf_counter()-started)*1000),
+                       **self.profile_metrics(profile,response), **accounting}
         except (ValueError,TypeError,AttributeError):
             self.budget.settle(reservation,status='invalid_response',known_usage=False)
             self.publish('degraded','invalid_response',profile=profile)
-            raise LunaError('invalid_response',{**self.profile_metrics(profile),'unknown_usage':True,
+            raise LunaError('invalid_response',{**self.profile_metrics(profile), **accounting, 'unknown_usage':True,
                 'api_ms':(time.perf_counter()-started)*1000,'ttft_ms':None,'total_tokens':None}) from None
-        known = all(isinstance(usage.get(key),int) and not isinstance(usage.get(key),bool) and usage[key]>=0
-                    for key in ('input_tokens','output_tokens'))
         total = usage.get('total_tokens')
         total = total if isinstance(total,int) and not isinstance(total,bool) and total >= 0 else None
-        cached = (usage.get('input_tokens_details') or {}).get('cached_tokens',0)
-        cached = cached if isinstance(cached,int) and not isinstance(cached,bool) and cached>=0 else 0
-        self.budget.settle(reservation,usage.get('input_tokens',0),usage.get('output_tokens',0),
-            known_usage=known,api_total_tokens=total,cached_input_tokens=cached,
+        known = metrics['total_tokens'] is not None
+        self.budget.settle(reservation, metrics['input_tokens'] or 0, metrics['output_tokens'] or 0,
+            status='ok' if known else 'usage_unconfirmed', known_usage=known,
+            api_total_tokens=total,cached_input_tokens=metrics['cached_input_tokens'] or 0,
             resolved_model_id=metrics['resolved_model_id'],resolved_model_revision=metrics['resolved_model_revision'])
         metrics['unknown_usage'] = not known
         return response,metrics
 
-    def decide(self,context,direct,samples=(),facts='',*,request=None,profile=None):
+    def decide(self,context,direct,samples=(),facts='',*,request=None,profile=None,before_dispatch=None):
         profile = profile or self.capture_profile()
         identifiers = ['none'] + [sample.id for sample in samples]
         schema = {'type':'object','properties':{'action':{'type':'string','enum':['ignore','text','sample']},
@@ -482,7 +535,8 @@ class LunaBrain:
             'reasoning':{'effort':'none'},'max_output_tokens':700,
             'input':[{'role':'user','content':json.dumps(data,ensure_ascii=False)}],
             'text':{'format':{'type':'json_schema','name':'haddock_decision','strict':True,'schema':schema}}}
-        response,metrics = self._execute(payload,profile,'direct' if direct else 'ambient')
+        response,metrics = self._execute(payload,profile,'direct' if direct else 'ambient',
+                                         before_dispatch=before_dispatch)
         try:
             decision = parse_decision(response,identifiers)
         except LunaError as error:
@@ -497,7 +551,7 @@ class LunaBrain:
         self.publish('ready',profile=profile)
         return MeasuredResult(decision,metrics)
 
-    def describe_media(self,frames,profile):
+    def describe_media(self,frames,profile,*,before_dispatch=None,interactive=False):
         # A successful text mock cannot enable this path. An operator-reviewed
         # capability record for this exact model/API/JSON/privacy tuple is needed.
         if not frames or not verified_vision(profile,multiple=len(frames)>1):
@@ -513,6 +567,7 @@ class LunaBrain:
             'animation_summary, limitations. Do not infer authors, dates, consent or official deadlines. '
             'Frames are sampled fixed images, not proof of every intermediate motion.'}]
         timestamps = set()
+        image_url_bytes = 0
         for frame in frames:
             raw,mime,at = frame.get('data'),frame.get('mime_type'),frame.get('at_ms')
             if (not isinstance(raw,bytes) or not raw or mime not in profile.capabilities.formats or
@@ -520,7 +575,9 @@ class LunaBrain:
                 raise LunaError('invalid_media',local_metrics())
             timestamps.add(at)
             content.append({'type':'input_text','text':'Frame at_ms='+str(at)})
-            content.append({'type':'input_image','image_url':'data:'+mime+';base64,'+base64.b64encode(raw).decode('ascii'),'detail':'high'})
+            image_url = 'data:'+mime+';base64,'+base64.b64encode(raw).decode('ascii')
+            image_url_bytes += len(image_url)  # The generated URL is JSON-safe ASCII.
+            content.append({'type':'input_image','image_url':image_url,'detail':'high'})
         schema = {'type':'object','properties':{
             'visual_description':{'type':'string'},
             'visible_text':{'type':'array','items':{'type':'object','properties':{
@@ -534,7 +591,8 @@ class LunaBrain:
                    'reasoning':{'effort':'none'},'max_output_tokens':1800,
                    'input':[{'role':'user','content':content}],
                    'text':{'format':{'type':'json_schema','name':'haddock_media_observation','strict':True,'schema':schema}}}
-        response,metrics = self._execute(payload,profile,'vision',visual_tokens=8192*len(frames))
+        response,metrics = self._execute(payload,profile,'vision',visual_tokens=8192*len(frames),
+            image_url_bytes=image_url_bytes,before_dispatch=before_dispatch,interactive=interactive)
         try:
             if response.get('status') != 'completed':
                 raise LunaError('incomplete_response')

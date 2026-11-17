@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
+
 from courswatch.conversation.contracts import Scope
 from courswatch.conversation.ingestion import envelope_from_message
 from courswatch.discord_app.bot import CourseBot
@@ -20,6 +22,22 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
         for command in self.bot.tree.get_commands(guild=self.bot.scope):
             self.assertIn('/'+command.name+' : '+command.description,help_text)
         self.assertEqual(self.bot.conversation_command_help('Haddock, /jurons rares'), '')
+
+    async def test_scan_starts_module_from_repository_and_keeps_override_directory(self):
+        import os
+        command = self.bot.tree.get_command('actualiser', guild=self.bot.scope)
+        self.bot.authorize = AsyncMock(return_value=True)
+        self.bot.finish_manual_scan = MagicMock()
+        interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()),
+                                      followup=SimpleNamespace(send=AsyncMock()))
+        configs = [({}, Path(__file__).resolve().parents[2]), ({'COURS_WATCH_COLLECTOR':'old.py'}, None)]
+        for environment, cwd in configs:
+            with self.subTest(cwd=cwd), patch.dict(os.environ, environment, clear=True), \
+                 patch('courswatch.discord_app.bot.asyncio.create_subprocess_exec', side_effect=OSError) as spawn:
+                await command.callback(interaction)
+            self.assertEqual(spawn.await_args.kwargs.get('cwd'), cwd)
+            self.assertEqual(spawn.await_args.args[1], '-m' if cwd else 'old.py')
+        self.assertTrue(interaction.response.defer.await_args.kwargs['ephemeral'])
 
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -46,8 +64,9 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
     def attach_chat(self, old=None):
         self.bot.luna = SimpleNamespace(journal=SimpleNamespace(active=MagicMock(return_value=old),
             coverage=MagicMock(return_value={}), checkpoint=MagicMock(),
-            reconcile_window=MagicMock(), purge=MagicMock()),
-            observe=MagicMock(), edited=MagicMock(), deleted=MagicMock(), close=AsyncMock())
+            reconcile_window=MagicMock(), record_coverage=MagicMock(), purge=MagicMock()),
+            observe=MagicMock(), edited=MagicMock(), deleted=MagicMock(), close=AsyncMock(),
+            invalidate=MagicMock(), invalidation=MagicMock(return_value=None), revalidated=MagicMock())
         return self.bot.luna
 
     async def test_normalizes_media_without_text_and_preserves_identity_and_reply(self):
@@ -79,7 +98,25 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
             fetch.assert_not_awaited()
             await self.bot.on_raw_message_edit(SimpleNamespace(guild_id=1, channel_id=2, message_id=10))
         chat.edited.assert_not_called()
-        chat.deleted.assert_called_once_with(Scope('1','2'), '10')
+        chat.invalidate.assert_called_with(Scope('1','2'), '10')
+        chat.deleted.assert_not_called()
+
+    async def test_temporary_member_failure_does_not_delete_message_on_raw_edit(self):
+        original = envelope_from_message(self.message())
+        chat = self.attach_chat(original)
+        changed = self.message(content='Correction synthétique', edited_at=datetime(2026, 11, 10, 11, tzinfo=timezone.utc))
+        changed.guild.fetch_member = AsyncMock(side_effect=OSError('synthetic outage'))
+        channel = SimpleNamespace(fetch_message=AsyncMock(return_value=changed))
+        payload = SimpleNamespace(guild_id=1, channel_id=2, message_id=10)
+        with patch.object(self.bot, 'get_channel', return_value=channel):
+            await self.bot.on_raw_message_edit(payload)
+            chat.deleted.assert_not_called()
+            chat.edited.assert_not_called()
+            chat.invalidate.assert_called_with(original.scope, original.message_id)
+            changed.guild.fetch_member.side_effect = None
+            changed.guild.fetch_member.return_value = changed.author
+            await self.bot.on_raw_message_edit(payload)
+        self.assertEqual(chat.edited.call_args.args[0].text, changed.content)
 
     async def test_backfill_is_silent_and_scope_checked(self):
         chat = self.attach_chat()
@@ -99,7 +136,8 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
         from courswatch.memory import Journal
         now = datetime(2026, 11, 17, 12, tzinfo=timezone.utc)
         journal = Journal(Path(self.temp.name)/'conversation.db', now=lambda:now)
-        source = envelope_from_message(self.message(created_at=datetime(2026, 11, 16, 10, tzinfo=timezone.utc)), now=now)
+        created = datetime(2026, 11, 16, 10, tzinfo=timezone.utc)
+        source = envelope_from_message(self.message(id=discord.utils.time_snowflake(created), created_at=created), now=now)
         journal.ingest(source)
         self.attach_chat().journal = journal
         async def empty_history(**kwargs):
@@ -129,11 +167,12 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
     async def test_publish_rechecks_role_and_detects_source_correction(self):
         message = self.message()
         self.attach_chat(envelope_from_message(message))
-        member = SimpleNamespace(roles=[])
+        member = SimpleNamespace(id=4, roles=[])
         message.guild.fetch_member = AsyncMock(return_value=member)
+        message.channel.fetch_message = AsyncMock(return_value=message)
         self.assertFalse(await self.bot.conversation_publish_allowed(message))
         member.roles = [SimpleNamespace(id=3)]
-        message.channel.fetch_message = AsyncMock(return_value=self.message(content='Date corrigée'))
+        message.channel.fetch_message.return_value = self.message(content='Date corrigée', guild=message.guild)
         self.assertFalse(await self.bot.conversation_publish_allowed(message))
         self.bot.luna.edited.assert_called_once()
 
@@ -148,6 +187,29 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.bot.conversation_publish_allowed(original))
         self.assertFalse(self.bot.intents.members)
         rest.guild.fetch_member.assert_awaited_once_with(4)
+        original.guild.fetch_member.assert_not_awaited()
+
+    async def test_current_versions_validate_shared_author_and_reject_changed_ancestor_embed(self):
+        author = self.message().author
+        guild = SimpleNamespace(id=1, fetch_member=AsyncMock(return_value=author))
+        def embed(path):
+            return [SimpleNamespace(image=SimpleNamespace(url='https://cdn.discordapp.com/' + path))]
+        old = self.message(guild=guild, embeds=embed('a.png'))
+        target = self.message(id=11, guild=guild, reference=SimpleNamespace(message_id=10))
+        active = {str(message.id): envelope_from_message(message) for message in (old, target)}
+        chat = self.attach_chat()
+        chat.journal.active.side_effect = lambda scope, message_id: active.get(message_id)
+        snapshot = SimpleNamespace(scope=Scope('1','2'), reply_target_id='11', dependencies=(('10',1),('11',1)))
+        current = {10:old, 11:target}
+        async def fetch_message(identity):
+            return current[identity]
+        target.channel.fetch_message = AsyncMock(side_effect=fetch_message)
+        self.assertTrue(await self.bot.conversation_dependencies_allowed(snapshot, None, target))
+        guild.fetch_member.assert_awaited_once_with(author.id)
+        current[10] = self.message(guild=guild, embeds=embed('b.png'))
+        self.assertFalse(await self.bot.conversation_dependencies_allowed(snapshot, None, target, publishing=True))
+        self.assertEqual(chat.edited.call_args.args[0].media[0].url, 'https://cdn.discordapp.com/b.png')
+        self.assertEqual(chat.edited.call_args.args[0].event_kind, 'rest')
 
     async def test_partial_backfill_continues_from_checkpoint_instead_of_first_page(self):
         from courswatch.memory import Journal
@@ -157,11 +219,17 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
         chat = self.attach_chat()
         chat.journal = journal
         chat.observe.side_effect = lambda envelope, **kwargs:journal.ingest(envelope, backfill=True)
-        messages = [self.message(id=10+i, created_at=datetime(2026, 11, 16, 10, i, tzinfo=timezone.utc)) for i in range(3)]
+        created = datetime(2026, 11, 16, 10, 0, tzinfo=timezone.utc)
+        base_id = discord.utils.time_snowflake(created)
+        # All messages share a timestamp. The missing messages span both sides
+        # of the page cursor, including the prefix and the final page.
+        messages = [self.message(id=base_id+i, created_at=created) for i in (1,3,5)]
+        for offset in (2,4):
+            journal.ingest(envelope_from_message(self.message(id=base_id+offset, created_at=created), now=now))
         after_values=[]
         async def history(**kwargs):
             after_values.append(kwargs['after'])
-            chosen=messages if isinstance(kwargs['after'], datetime) else [messages[2]]
+            chosen=[message for message in messages if message.id > kwargs['after'].id]
             for message in chosen[:kwargs['limit']]:
                 yield message
         channel=SimpleNamespace(id=2, history=history)
@@ -170,9 +238,12 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value=now
             await self.bot.backfill_conversations(channel)
             self.assertFalse(journal.coverage(Scope('1','2'))['complete'])
-            await self.bot.backfill_conversations(channel)
-        self.assertEqual(after_values[1].id,11)
-        self.assertIsNotNone(journal.active(Scope('1','2'),'12'))
+            self.assertIsNone(journal.active(Scope('1','2'),str(base_id+2)))
+            self.assertIsNotNone(journal.active(Scope('1','2'),str(base_id+4)))
+            await self.bot.resume_conversation_backfill(channel)
+        self.assertEqual(after_values[1].id,base_id+3)
+        self.assertIsNone(journal.active(Scope('1','2'),str(base_id+4)))
+        self.assertIsNotNone(journal.active(Scope('1','2'),str(base_id+5)))
         self.assertTrue(journal.coverage(Scope('1','2'))['complete'])
         self.assertEqual(journal.coverage(Scope('1','2'))['cursor'],'')
 

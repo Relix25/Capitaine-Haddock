@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+from ops.build_release import PACKAGE_DATA
 
 
 def main():
@@ -16,7 +17,10 @@ def main():
         if folder.is_symlink():
             raise SystemExit('Symlinked source package')
         if folder.exists():
-            for path in sorted(folder.rglob('*.py')):
+            package_files = set(folder.rglob('*.py'))
+            package_files.update(root / name for name in PACKAGE_DATA
+                                 if (root / name).is_relative_to(folder))
+            for path in sorted(package_files):
                 if (path.is_symlink() or any(parent.is_symlink() for parent in path.parents
                                              if parent != root and parent.is_relative_to(root))):
                     raise SystemExit('Symlinked source file')

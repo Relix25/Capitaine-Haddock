@@ -130,8 +130,12 @@ def reminder_events(state, configuration, now=None):
     return now.date().isoformat(), rendered
 
 
+def reminder_config_path(config):
+    return Path(config.get('reminders_file') or '/etc/cours-watch/reminders.json')
+
+
 def enqueue_daily_reminders(state, config, now=None, initial=False):
-    path = Path(config.get('reminders_file', '/etc/cours-watch/reminders.json'))
+    path = reminder_config_path(config)
     if not path.exists():
         return {'enabled': False, 'queued': 0}
     configuration = json.loads(path.read_text())

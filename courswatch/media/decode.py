@@ -9,7 +9,7 @@ from PIL import Image, ImageChops, ImageStat, UnidentifiedImageError
 
 from courswatch.media.acquisition import MediaUnavailable
 
-PREPROCESS_VERSION = 'timed-animation-v1'
+PREPROCESS_VERSION = 'timed-animation-v2'
 DESCRIPTION_SCHEMA_VERSION = '1'
 
 
@@ -43,6 +43,39 @@ class DecodedMedia:
     limitations: tuple[str, ...]
 
 
+def _check_gif_trailer(data, deadline, clock):
+    """Require a trailer at a block boundary, even if Pillow loaded frame zero."""
+    size = len(data)
+    if size < 13:
+        raise MediaUnavailable('invalid_gif_incomplete')
+    packed = data[10]
+    offset = 13 + (3 << ((packed & 7) + 1) if packed & 128 else 0)
+    while offset < size:
+        if clock() > deadline:
+            raise MediaUnavailable('decode_deadline')
+        introducer = data[offset]
+        offset += 1
+        if introducer == 0x3b:
+            return
+        if introducer == 0x21:  # Extension label followed by sub-blocks.
+            offset += 1
+        elif introducer == 0x2c:  # Image descriptor, local palette, LZW size.
+            if offset + 9 >= size:
+                break
+            packed = data[offset + 8]
+            offset += 10 + (3 << ((packed & 7) + 1) if packed & 128 else 0)
+        else:
+            raise MediaUnavailable('invalid_gif_structure')
+        while offset < size:
+            if clock() > deadline:
+                raise MediaUnavailable('decode_deadline')
+            length = data[offset]
+            offset += 1 + length
+            if not length:
+                break
+    raise MediaUnavailable('invalid_gif_incomplete')
+
+
 def decode_media(data, *, limits=None, clock=time.monotonic):
     """Sample by display duration and image changes, never assume native GIF API.
 
@@ -65,6 +98,8 @@ def decode_media(data, *, limits=None, clock=time.monotonic):
             width, height = image.size
             if width * height > limits.max_pixels or min(width, height) < 1:
                 raise MediaUnavailable('pixel_limit')
+            if actual_format == 'GIF':
+                _check_gif_trailer(data, started + limits.max_seconds, clock)
             animated = bool(getattr(image, 'is_animated', False))
             # Metadata scan and small difference measurements, with no unbounded
             # list of decoded full-resolution frames retained in memory.

@@ -30,6 +30,10 @@ class VoiceMessageError(RuntimeError):
     pass
 
 
+class VoiceReceiptUncertain(VoiceMessageError):
+    pass
+
+
 def load_samples(root=ASSETS):
     try:
         root = root.resolve()
@@ -103,9 +107,17 @@ def send_voice_message(channel_id,token,sample,nonce,reference_id=None):
                 'User-Agent':'UPBCourseWatch/1.0','Content-Type':content_type})
         try:
             with urllib.request.urlopen(request,timeout=25) as response:
-                receipt = json.load(response)
-            if not receipt.get('flags',0) & VOICE_FLAG or len(receipt.get('attachments',[])) != 1:
-                raise VoiceMessageError('Discord did not confirm a native voice message')
+                try:
+                    receipt = json.load(response)
+                except (ValueError, OSError):
+                    raise VoiceReceiptUncertain('Discord voice receipt unreadable') from None
+            if not isinstance(receipt, dict):
+                raise VoiceReceiptUncertain('Discord voice receipt unreadable')
+            flags, attachments = receipt.get('flags'), receipt.get('attachments')
+            if (not isinstance(flags, int) or not flags & VOICE_FLAG
+                    or not isinstance(attachments, list) or len(attachments) != 1
+                    or not re.fullmatch(r'\d{15,22}', str(receipt.get('id', '')))):
+                raise VoiceReceiptUncertain('Discord did not confirm a native voice message')
             return receipt
         except urllib.error.HTTPError as error:
             if error.code == 429 and attempt < 2:

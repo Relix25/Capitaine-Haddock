@@ -13,6 +13,7 @@ MODEL_CHOICES = {
     'deepseek': {'model': 'deepseek/deepseek-v4.1-flash', 'require_zdr': True},
 }
 MODEL_LABELS = {'hy4': 'Tencent HY4 Flash', 'deepseek': 'DeepSeek V4.1 Flash'}
+DECLARED_VISION = 'Owner confirms model vision, 2026-11-17; API combination untested'
 
 
 def resolve_profile(settings):
@@ -45,11 +46,12 @@ def resolve_profile(settings):
     if any(not isinstance(value,str) or value not in states for value in values.values()):
         raise ValueError('Invalid capability state')
     verified = record.get('verified_real', False)
-    evidence = record.get('evidence', 'Owner confirms model vision, 2026-11-17; API combination untested')
+    evidence = record.get('evidence', '' if verified else DECLARED_VISION)
     if not isinstance(verified, bool) or not isinstance(evidence, str):
         raise ValueError('Invalid capability evidence')
     if verified:
-        if (not evidence.strip() or record.get('provider') != 'commandcode'
+        if (not evidence.strip() or evidence.strip() == DECLARED_VISION
+                or record.get('provider') != 'commandcode'
                 or record.get('endpoint') != ENDPOINT or record.get('requested_model_id') != model
                 or record.get('require_zdr') is not require_zdr
                 or any(values[name] != 'verified' for name in
@@ -87,11 +89,23 @@ def resolve_vision_profile(settings, turn_profile):
     route_settings = {**settings, **MODEL_CHOICES[route]}
     if 'vision_route_require_zdr' in settings:
         route_settings['require_zdr'] = settings['vision_route_require_zdr']
-    target = resolve_profile(route_settings)
     # A turn requiring ZDR must never disclose media to a weaker route.
-    if turn_profile.require_zdr and not target.require_zdr:
+    if turn_profile.require_zdr and route_settings['require_zdr'] is False:
         return None
+    target = resolve_profile(route_settings)
     return target if verified_vision(target) else None
+
+
+def settings_for_selection(settings, selection, debug):
+    """Apply a preference to the original configuration and retain its ZDR floor."""
+    if selection not in MODEL_CHOICES or not isinstance(debug, bool):
+        raise ValueError('Unsupported model selection')
+    configured_zdr = settings.get('require_zdr', False)
+    if not isinstance(configured_zdr, bool):
+        raise ValueError('require_zdr must be a boolean')
+    choice = MODEL_CHOICES[selection]
+    return {**settings, 'model':choice['model'], 'debug':debug,
+            'require_zdr':configured_zdr or choice['require_zdr']}
 
 
 def effective_settings(data, settings):
@@ -106,7 +120,7 @@ def effective_settings(data, settings):
             or not isinstance(selection['selection'], str) or selection['selection'] not in MODEL_CHOICES
             or not isinstance(selection.get('debug', True), bool)):
         raise ValueError('Invalid model selection')
-    return {**result, **MODEL_CHOICES[selection['selection']], 'debug':selection.get('debug', True)}
+    return settings_for_selection(result, selection['selection'], selection.get('debug', True))
 
 
 def save_preferences(data, selection, debug):

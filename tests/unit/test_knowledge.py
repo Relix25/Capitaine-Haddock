@@ -6,10 +6,13 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from courswatch.conversation.contracts import MessageEnvelope, RetrievalRequest, Scope
+from courswatch.conversation.contracts import MediaDescriptor, MessageEnvelope, RetrievalRequest, Scope
+from courswatch.discord_app.tasks import task_rows
 from courswatch.documents.versions import archive_pdf
 from courswatch.knowledge import KnowledgeService, render_answer
+from courswatch.knowledge.service import is_own_media_request
 from courswatch.memory import Journal
 from courswatch.reminders import body_hash
 from courswatch.storage.schema import migrate
@@ -77,6 +80,79 @@ class KnowledgeTests(unittest.TestCase):
         self.assertFalse(result.evidence)
         precise = self.service.query(self.scope, 'Quand oral TEST-AAIT ?')
         self.assertEqual([row.id for row in precise.evidence], ['task:oral'])
+
+    def test_clarification_titles_keep_their_source_and_version(self):
+        self.item('Due: Friday, 20 November 2026, 06:00 PM')
+        self.item('Due: Saturday, 21 November 2026, 06:00 PM', source='teams:TEST-AAIT')
+        self.task('deposit', 'TEST-AAIT dépôt')
+        self.task('oral', 'TEST-AAIT oral', reference={'source': 'teams:TEST-AAIT', 'key': 'dates'})
+        result = self.service.query(self.scope, 'C’est quand le projet TEST-AAIT ?')
+        self.assertEqual([row.id for row in result.dependencies], ['task:deposit', 'task:oral'])
+        self.assertFalse(result.evidence)
+        self.assertIn('TEST-AAIT oral', render_answer(result))
+        self.assertTrue(self.service.revalidate(self.scope, result))
+        self.item('Due: Sunday, 22 November 2026, 06:00 PM', source='teams:TEST-AAIT')
+        self.assertFalse(self.service.revalidate(self.scope, result))
+        updated = self.service.query(self.scope, 'C’est quand le projet TEST-AAIT ?')
+        self.assertTrue(self.service.revalidate(self.scope, updated))
+        self.shared[self.scope] = ('moodle:TEST-AAIT',)
+        self.assertFalse(self.service.revalidate(self.scope, updated))
+        self.assertNotIn('TEST-AAIT oral', render_answer(self.service.query(self.scope, 'C’est quand le projet TEST-AAIT ?')))
+
+    def test_named_course_cannot_cite_another_courses_task_announcement_or_pdf(self):
+        from tests.integration.test_moodle_pdf_versions import pdf_bytes
+        self.config['courses'] = [{'id': 'AAIT', 'label': 'AAIT · Crafter'}, {'id': 'SOS', 'label': 'Self-organizing systems'}]
+        self.shared[self.scope] = ('moodle:AAIT', 'moodle:SOS')
+        self.item('Due: Tuesday, 15 December 2026, 06:00 PM', source='moodle:SOS',
+                  title='Remise SOS', url='https://example.org/source/sos')
+        self.task('sos', 'Remise intermédiaire', course='SOS', reference={'source': 'moodle:SOS', 'key': 'dates'})
+        store = self.root / 'documents'
+        store.mkdir()
+        (store / 'SOS').mkdir()
+        self.config['knowledge_documents_dir'] = str(store)
+        data = pdf_bytes(1, ['SOS remise : 15 decembre'])
+        archive_pdf({'bytes': data, 'sha256': hashlib.sha256(data).hexdigest(), 'pages': 1,
+                     'filename': 'test.pdf', 'final_url': 'https://curs.upb.ro/2026/pluginfile.php/1/test.pdf'},
+                    store, 'SOS', 'module-1', 'Remise SOS', 'https://curs.upb.ro/2026/mod/resource/view.php?id=1')
+        question = 'Haddock, quelle est la date de remise AAIT ? <:super:123456789012345678>'
+        self.assertTrue(self.service.is_course_question(question, self.scope))
+        for tasks in (self.tasks.copy(), []):
+            self.tasks = tasks
+            self.write_tasks()
+            result = self.service.query(self.scope, question)
+            self.assertFalse(result.evidence)
+            self.assertNotIn('15 décembre', render_answer(result))
+        dual_request = 'Quand est la remise AAIT et décris mon GIF SOS ?'
+        self.assertTrue(self.service.is_course_question(dual_request, self.scope))
+        self.assertFalse(self.service.is_course_question('Quelle date est écrite sur mon GIF AAIT ?', self.scope))
+        self.item('Remise prévue le 12 novembre.', source='moodle:AAIT', title='Remise AAIT',
+                  url='https://example.org/source/aait')
+        evidence, = self.service.query(self.scope, dual_request).evidence
+        self.assertEqual(json.loads(evidence.source_id)[0], 'moodle:AAIT')
+        self.shared[self.scope] = ('moodle:SOS',)
+        self.assertFalse(self.service.query(self.scope, question).evidence)
+
+    def test_default_task_path_matches_private_command_and_prefers_the_proof_url(self):
+        self.config.pop('reminders_file')
+        self.item('Due: Friday, 20 November 2026, 06:00 PM', source='teams:TEST-AAIT',
+                  url='https://teams.cloud.microsoft/l/message/test-channel/test-message')
+        self.task('deadline', 'TEST-AAIT oral', url='https://teams.cloud.microsoft/',
+                  reference={'source': 'teams:TEST-AAIT', 'key': 'dates'})
+        fixture_path = self.root / 'reminders.json'
+        read_text = Path.read_text
+
+        def read_reminder_config(path, *args, **kwargs):
+            self.assertEqual(path, Path('/etc/cours-watch/reminders.json'))
+            return read_text(fixture_path, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', read_reminder_config):
+            result = self.service.query(self.scope, 'Quand est l’oral TEST-AAIT ?')
+            command_rows, _ = task_rows(self.root, self.config, now=self.now)
+            self.assertTrue(self.service.revalidate(self.scope, result))
+        evidence, = result.evidence
+        self.assertEqual(evidence.id, 'task:deadline')
+        self.assertEqual(evidence.date_value, command_rows[0]['due'].isoformat())
+        self.assertIn('/l/message/test-channel/test-message', render_answer(result))
 
     def test_changed_official_source_replaces_deadline_and_invalidates_old_answer(self):
         self.item('Due: Friday, 20 November 2026, 06:00 PM')
@@ -255,6 +331,26 @@ class KnowledgeTests(unittest.TestCase):
         result = self.service.query(self.scope, 'Image Alex la semaine dernière')
         self.assertTrue(result.clarification)
         self.assertFalse(result.evidence)
+
+    def test_first_person_media_uses_requester_and_keeps_cached_analysis_date(self):
+        old = self.now - timedelta(days=7)
+        media = MediaDescriptor('emoji', 'animation', 'https://cdn.discordapp.com/emojis/123.webp', animated=True)
+        for identifier, author, analysis_field in [('one', 'alice', 'analyzed_at'), ('two', 'bob', 'analysed_at')]:
+            message = self.journal.ingest(MessageEnvelope(self.scope, identifier, author, 'Alex', '', old.isoformat(),
+                media=(media,), source_url='https://discord.com/channels/guild/allowed/' + identifier))
+            self.journal.save_observation(self.scope, identifier, message.revision, media.media_id,
+                {'status': 'ready', 'description': 'TEST 2099', analysis_field: self.now.isoformat()})
+        for question in ('Haddock, mon GIF avec TEST 2099 ?', 'Mon emoji'):
+            self.assertTrue(is_own_media_request(question))
+            result = self.service.query(RetrievalRequest(self.scope, question, intent='conversation', author_id='bob'))
+            evidence, = result.evidence
+            self.assertEqual(evidence.author_id, 'bob')
+            self.assertEqual(evidence.published_at, old.isoformat())
+            self.assertEqual(evidence.observed_at, self.now.isoformat())
+            self.assertIn('10/11/2026 (analyse du 17/11/2026)', render_answer(result))
+            self.assertIn('/allowed/two', render_answer(result))
+            self.assertNotIn('/allowed/one', render_answer(result))
+            self.assertTrue(self.service.revalidate(self.scope, result))
 
     def test_rendering_keeps_complete_citations_within_discord_budget(self):
         self.item('TEST-AAIT : ' + 'phrase complète. ' * 300)

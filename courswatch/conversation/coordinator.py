@@ -5,7 +5,11 @@ import hashlib
 import time
 
 from courswatch.conversation.contracts import ConversationSnapshot
-from courswatch.conversation.participation import CANCEL, CONTINUATION, CORRECTION, INCOMPLETE, THANKS, substantive_answer
+from courswatch.conversation.participation import (
+    CANCEL, CONTINUATION, CORRECTION, INCOMPLETE, THANKS, UNCERTAIN, substantive_answer,
+)
+
+OPEN_STATES = ('queued', 'generating')
 
 
 class QueueFull(RuntimeError):
@@ -19,7 +23,19 @@ def _goal(text):
 
 def _entities(text):
     # Conservative anchors prevent two course/project questions being coalesced.
-    return frozenset(re.findall(r'\b(?:aait|aitdm|bdfa|sos|[A-Z][A-Z0-9_-]{2,})\b', text))
+    known = re.findall(r'\b(?:aait|aitdm|bdfa|sos)\b', text, re.I)
+    others = re.findall(r'\b[A-Z][A-Z0-9_-]{2,}\b', text)
+    return frozenset(entity.casefold() for entity in known + others)
+
+
+def _compatible(first, second):
+    left, right = _entities(first), _entities(second)
+    return not left or not right or bool(left & right)
+
+
+def _clarification(text):
+    return ('?' not in text and not UNCERTAIN.search(text)
+            and bool(CORRECTION.search(text) or CONTINUATION.search(text)))
 
 
 @dataclass
@@ -42,6 +58,7 @@ class Turn:
     received_at: float = 0
     gateway_ms: float | None = None
     fragmenting: bool = False
+    clarification_ids: list[str] = field(default_factory=list)
 
 
 class Coordinator:
@@ -76,93 +93,146 @@ class Coordinator:
         self.messages[key] = message
         if old is not None:
             for turn in self.turns.values():
-                if turn.scope == message.scope and message.message_id in turn.message_ids and turn.state in ('queued', 'generating'):
-                    turn.revision += 1
-                    if message.deleted:
-                        turn.state = 'deleted'
-                    elif CANCEL.search(message.text):
-                        turn.state = 'cancelled'
-                    elif message.message_id in turn.trigger_ids:
-                        turn.goal = '\n'.join(self.active(turn.scope, identity).text for identity in turn.trigger_ids if self.active(turn.scope, identity))
+                if turn.scope != message.scope or message.message_id not in turn.message_ids or turn.state not in OPEN_STATES:
+                    continue
+                turn.revision += 1
+                if message.deleted:
+                    turn.state = 'deleted'
+                elif message.message_id in turn.trigger_ids and CANCEL.search(message.text):
+                    self._withdraw_requester(turn, message.author_id, 'cancelled')
+                else:
+                    self._update_goal(turn)
         self.prune()
         return True
+
+    def _update_goal(self, turn):
+        prompts = [self.active(turn.scope, identity) for identity in turn.trigger_ids]
+        lines = [item.text or 'Décrire le média joint' for item in prompts if item]
+        prompt = '\n'.join(lines)
+        for identity in tuple(turn.clarification_ids):
+            item = self.active(turn.scope, identity)
+            if item and _clarification(item.text) and _compatible(prompt, item.text):
+                lines.append('Précision liée : ' + item.text)
+            else:
+                turn.clarification_ids.remove(identity)
+                turn.message_ids.remove(identity)
+        turn.goal = '\n'.join(lines)
+
+    def _same_goal(self, turn, message):
+        if message.media or not message.text.strip():
+            return False
+        return all((item := self.active(turn.scope, identity)) and not item.media
+                   and item.reply_to_message_id == message.reply_to_message_id
+                   and _goal(item.text) == _goal(message.text) for identity in turn.trigger_ids)
+
+    def _withdraw_requester(self, turn, author_id, state):
+        if len(turn.requester_ids) == 1:
+            turn.state = state
+            return
+        # Another user can still need an answer to the shared request.
+        turn.requester_ids.remove(author_id)
+        removed = {identity for identity in turn.message_ids
+                   if (item := self.active(turn.scope, identity)) and item.author_id == author_id}
+        turn.trigger_ids = [identity for identity in turn.trigger_ids if identity not in removed]
+        turn.clarification_ids = [identity for identity in turn.clarification_ids if identity not in removed]
+        turn.message_ids = [identity for identity in turn.message_ids if identity not in removed]
+        if turn.reply_target_id in removed:
+            turn.reply_target_id = turn.trigger_ids[0]
+        turn.revision += 1
+        self._update_goal(turn)
 
     def _linked_turn(self, message):
         reply = message.reply_to_message_id
         if not reply:
             return None
         linked = self.bot_links.get(self._key(message.scope, reply), reply)
+        now = self.clock()
         return next((turn for turn in reversed(tuple(self.turns.values()))
                      if turn.scope == message.scope and linked in turn.message_ids
-                     and turn.state in ('queued', 'generating')), None)
+                     and turn.state in OPEN_STATES and now <= turn.expires_at), None)
 
-    def can_attach_fragment(self,message):
-        return any(turn.state=='queued' and turn.scope==message.scope and turn.fragmenting
-                   and message.author_id in turn.requester_ids and self.clock()-turn.opened_at<=1.5
-                   and not (_entities(turn.goal) and _entities(message.text)
-                            and _entities(turn.goal)!=_entities(message.text))
-                   for turn in self.turns.values())
+    def _attach_trigger(self, turn, message, direct, now):
+        same_author = message.author_id in turn.requester_ids
+        turn.trigger_ids.append(message.message_id)
+        turn.message_ids.append(message.message_id)
+        if same_author:
+            turn.reply_target_id = message.message_id
+        else:
+            turn.requester_ids.append(message.author_id)
+        if re.search(r'[?!]\s*$', message.text):
+            turn.fragmenting = False
+        if turn.state == 'queued':
+            prior_ready = now if direct and not turn.direct else turn.ready_at
+            turn.ready_at = min(turn.opened_at + 1.5, max(prior_ready, now + .15))
+        turn.direct = turn.direct or direct
+        turn.revision += 1
+        self._update_goal(turn)
+        return turn
 
-    def enqueue(self, message, direct, *, wait_ms=None, gateway_ms=None):
+    def enqueue(self, message, direct, *, wait_ms=None, gateway_ms=None, allow_new=True, received_at=None):
         now = self.clock()
-        candidates = [turn for turn in self.turns.values() if turn.scope == message.scope and turn.state in ('queued', 'generating')]
+        received_at = now if received_at is None else received_at
+        expires_at = received_at + self.max_age - max(0, gateway_ms or 0) / 1000
+        if (message.ingestion_mode != 'live' or message.deleted or message.is_bot or now >= expires_at):
+            return None
+        candidates = [turn for turn in self.turns.values() if turn.scope == message.scope
+                      and turn.state in OPEN_STATES and now <= turn.expires_at]
         linked = self._linked_turn(message)
         if CANCEL.search(message.text):
-            for turn in candidates:
-                if turn is linked or (not message.reply_to_message_id and message.author_id in turn.requester_ids
-                    and (len([item for item in candidates if message.author_id in item.requester_ids]) == 1
-                         or bool(_entities(message.text) & _entities(turn.goal)))):
-                    turn.state = 'cancelled'
+            if linked and message.author_id in linked.requester_ids:
+                self._withdraw_requester(linked, message.author_id, 'cancelled')
+            elif not message.reply_to_message_id:
+                own = [turn for turn in candidates if message.author_id in turn.requester_ids
+                       and _compatible(turn.goal, message.text)]
+                if len(own) == 1:
+                    self._withdraw_requester(own[0], message.author_id, 'cancelled')
             return None
+        if THANKS.fullmatch(message.text.strip()):
+            if linked and message.author_id in linked.requester_ids:
+                self._withdraw_requester(linked, message.author_id, 'answered')
+            return None
+
         if linked is not None:
-            if THANKS.fullmatch(message.text.strip()):
-                linked.state = 'answered'
+            same_author = message.author_id in linked.requester_ids
+            if _compatible(linked.goal, message.text):
+                clarification = _clarification(message.text)
+                exact = direct and self._same_goal(linked, message)
+                fragment = same_author and (linked.fragmenting or clarification)
+                if exact or fragment:
+                    return self._attach_trigger(linked, message, direct, now)
+                if not direct and not same_author:
+                    if clarification:
+                        linked.clarification_ids.append(message.message_id)
+                        linked.message_ids.append(message.message_id)
+                        linked.revision += 1
+                        self._update_goal(linked)
+                        return linked
+                    if substantive_answer(message.text, linked.goal):
+                        linked.state = 'answered'
+            if not direct:
+                # A short aside stays in the journal without invalidating the answer in progress.
                 return None
-            if message.message_id not in linked.message_ids:
-                linked.message_ids.append(message.message_id)
-                linked.revision += 1
-            # A substantive answer from someone else resolves the pending question;
-            # corrections and new explicit solicitations instead rebuild its snapshot.
-            if (not direct and message.author_id not in linked.requester_ids
-                    and not CORRECTION.search(message.text) and substantive_answer(message.text,linked.goal)):
-                linked.state = 'answered'
-                return None
-            if direct and message.author_id not in linked.requester_ids:
-                linked.requester_ids.append(message.author_id)
-            if message.author_id in linked.requester_ids:
-                linked.reply_target_id = message.message_id
-                if message.message_id not in linked.trigger_ids:
-                    linked.trigger_ids.append(message.message_id)
-                linked.goal += '\n' + message.text
-            return linked
+
         for turn in reversed(candidates):
-            if turn.state != 'queued' or now - turn.opened_at > 1.5:
+            if turn is linked or turn.state != 'queued' or now - turn.opened_at > 1.5:
                 continue
             same_author = message.author_id in turn.requester_ids
-            compatible = not (_entities(turn.goal) and _entities(message.text) and _entities(turn.goal) != _entities(message.text))
-            exact = direct and _goal(turn.goal) == _goal(message.text)
-            fragment = same_author and compatible and (CONTINUATION.search(message.text) or INCOMPLETE.search(turn.goal) or turn.fragmenting)
+            exact = direct and self._same_goal(turn, message)
+            fragment = (same_author and _compatible(turn.goal, message.text)
+                        and (direct or not message.mentioned_user_ids)
+                        and (turn.fragmenting or _clarification(message.text)))
             if exact or fragment:
-                turn.trigger_ids.append(message.message_id)
-                turn.message_ids.append(message.message_id)
-                if message.author_id not in turn.requester_ids:
-                    turn.requester_ids.append(message.author_id)
-                turn.goal += '\n' + message.text
-                if re.search(r'[?!]\s*$',message.text):
-                    turn.fragmenting=False
-                turn.reply_target_id = message.message_id if same_author else turn.reply_target_id
-                turn.direct = turn.direct or direct
-                turn.revision += 1
-                turn.ready_at = min(turn.opened_at + 1.5, max(turn.ready_at, now + .15))
-                return turn
+                return self._attach_trigger(turn, message, direct, now)
+        if not allow_new:
+            return None
         if len(candidates) >= self.max_pending:
             raise QueueFull('conversation_queue_full')
         self.sequence += 1
         identity = 'turn_' + hashlib.sha256((message.scope.key+':'+message.message_id).encode()).hexdigest()[:24]
         delay = wait_ms / 1000 if wait_ms is not None else (.15 if direct else 4)
         turn = Turn(identity, identity, message.scope, [message.message_id], [message.author_id], message.message_id,
-                    message.text or 'Décrire le média joint', direct, now, now + delay, now + self.max_age,
-                    message_ids=[message.message_id], received_at=now, gateway_ms=gateway_ms,
+                    message.text or 'Décrire le média joint', direct, now, now + delay, expires_at,
+                    message_ids=[message.message_id], received_at=received_at, gateway_ms=gateway_ms,
                     fragmenting=bool(INCOMPLETE.search(message.text)))
         self.turns[identity] = turn
         return turn
@@ -192,8 +262,8 @@ class Coordinator:
             turn.goal, tuple((message.message_id, message.revision) for message in messages))
 
     def valid(self, snapshot):
-        turn = self.turns[snapshot.turn_id]
-        return (turn.state in ('queued', 'generating') and turn.revision == snapshot.revision
+        turn = self.turns.get(snapshot.turn_id)
+        return (turn is not None and turn.state in OPEN_STATES and turn.revision == snapshot.revision
                 and self.clock() <= turn.expires_at and all(
                     (message := self.active(snapshot.scope, identity)) is not None and message.revision == revision
                     for identity, revision in snapshot.dependencies))

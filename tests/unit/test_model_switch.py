@@ -4,11 +4,13 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import threading
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from courswatch.conversation.brain import LunaBrain
 from courswatch.conversation.chat import LunaChat
+from courswatch.conversation.contracts import ConversationSnapshot, Scope
 from courswatch.conversation.models import effective_settings, save_preferences
 from courswatch.discord_app.settings_ui import SettingsModal
 from courswatch.discord_app.bot import CourseBot
@@ -87,6 +89,51 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(chat.brain.require_zdr)
         self.assertTrue(chat.debug_enabled)
         self.assertEqual(chat.brain.budget.snapshot()['used_tokens'],15)
+        await chat.close()
+
+    async def test_settings_change_during_transport_preserves_captured_request(self):
+        bot = SimpleNamespace(voice_samples=())
+        with patch('courswatch.conversation.brain.read_api_key', return_value='fake'):
+            chat = LunaChat(bot, self.root, self.settings, lambda:{})
+        snapshot = ConversationSnapshot('turn', 'conversation', 1, Scope('1','2'),
+                                        (), (), (), '1', 'Question synthétique', ())
+        response = {'status':'completed','usage':{'input_tokens':10,'output_tokens':5},
+                    'output':[{'type':'message','content':[{'type':'output_text','text':json.dumps(
+                        {'action':'text','reply':'À bord !','sample_id':'none'})}]}]}
+        loop = asyncio.get_running_loop()
+        entered = asyncio.Event()
+        finish = threading.Event()
+        captured = []
+
+        def send(request, *, timeout):
+            captured.append(request)
+            if len(captured) == 1:
+                loop.call_soon_threadsafe(entered.set)
+                self.assertTrue(finish.wait(3))
+            return io.BytesIO(json.dumps(response).encode())
+
+        with patch('courswatch.conversation.brain.urllib.request.urlopen', side_effect=send):
+            initial = asyncio.create_task(chat._model(snapshot, True, '', {},
+                                                      profile=chat.brain.capture_profile()))
+            try:
+                await asyncio.wait_for(entered.wait(),timeout=3)
+                pending = asyncio.create_task(chat.apply_settings('hy4', False))
+                await asyncio.sleep(0)
+                self.assertFalse(pending.done())
+                self.assertFalse((self.root/'model-selection.json').exists())
+            finally:
+                finish.set()
+            await initial
+            await pending
+            await chat._model(snapshot, True, '', {}, profile=chat.brain.capture_profile())
+
+        deepseek, hy4 = captured
+        self.assertEqual(deepseek.get_header('X-cmd-zdr'), '1')
+        self.assertIsNone(hy4.get_header('X-cmd-zdr'))
+        self.assertEqual([json.loads(request.data)['model'] for request in captured],
+                         ['deepseek/deepseek-v4.1-flash','tencent/hy4-flash'])
+        self.assertTrue(all(json.loads(request.data)['store'] is False for request in captured))
+        self.assertEqual(chat.brain.budget.snapshot()['used_tokens'], 30)
         await chat.close()
 
     def interaction(self, **changes):
@@ -182,6 +229,31 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.brain.model,self.settings['model'])
         self.assertTrue(chat.debug_enabled)
         self.assertFalse((self.root/'model-selection.json').exists())
+        await chat.close()
+
+    async def test_hy4_debug_change_and_restart_preserve_explicit_zdr(self):
+        settings = {**self.settings, 'model':'tencent/hy4-flash', 'require_zdr':True}
+        with patch('courswatch.conversation.brain.read_api_key',return_value='fake'):
+            chat = LunaChat(SimpleNamespace(), self.root, settings, lambda:{})
+        modal = SettingsModal(SimpleNamespace(luna=chat), 10)
+        self.assertEqual(modal.model.options[0].description, 'ZDR exigé')
+        modal.stop()
+        await chat.apply_settings('hy4', False)
+        self.assertTrue(chat.brain.require_zdr)
+        self.assertTrue(effective_settings(self.root, settings)['require_zdr'])
+        await chat.close()
+
+    async def test_invalid_target_profile_is_rejected_before_preferences_change(self):
+        settings = {**self.settings, 'model_capabilities':{'hy4':{'verified_real':True}}}
+        save_preferences(self.root, 'deepseek', True)
+        with patch('courswatch.conversation.brain.read_api_key',return_value='fake'):
+            chat = LunaChat(SimpleNamespace(), self.root, settings, lambda:{})
+        expected = (self.root/'model-selection.json').read_bytes()
+        with self.assertRaises(ValueError):
+            await chat.apply_settings('hy4', False)
+        self.assertEqual((self.root/'model-selection.json').read_bytes(), expected)
+        self.assertEqual(chat.brain.model, self.settings['model'])
+        self.assertTrue(chat.debug_enabled)
         await chat.close()
 
     async def test_registration_removes_only_retired_chatbot_command(self):
