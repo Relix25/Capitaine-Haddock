@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import patch
 
-from haddock_emojis import icon, button_emoji, image_url
-from discord_presentation import compact_embed, embed_payload
-from course_health import status_embed
+from courswatch.discord_app.emojis import icon, button_emoji, image_url
+from courswatch.discord_app.presentation import compact_embed, embed_payload
+from courswatch.discord_app.health import status_embed
 
 
 CATALOG = {kind:{'id':str(1570240437279662120 + n),'name':name} for n,(kind,name) in enumerate([
@@ -13,7 +13,7 @@ CATALOG = {kind:{'id':str(1570240437279662120 + n),'name':name} for n,(kind,name
 
 class HaddockEmojiTests(unittest.TestCase):
     def test_catalog_references_validate_ids_and_names(self):
-        with patch('haddock_emojis.catalog',return_value={'warning':{'id':'bad','name':'@everyone'}}):
+        with patch('courswatch.discord_app.emojis.catalog',return_value={'warning':{'id':'bad','name':'@everyone'}}):
             self.assertEqual(icon('warning','⚠️'),'⚠️')
             self.assertEqual(button_emoji(),{'name':'📖'})
             self.assertIsNone(image_url('warning'))
@@ -23,7 +23,7 @@ class HaddockEmojiTests(unittest.TestCase):
                 '📌 À prévoir — **Oral** : **16/11/2026** (J-4).\n'
                 '🔴 **URGENT** — **Dépôt** : **12/11/2026** (aujourd’hui).\n'
                 '⚠️ **DATE À CONFIRMER — Autre** : source modifiée.')
-        with patch('haddock_emojis.catalog',return_value=CATALOG):
+        with patch('courswatch.discord_app.emojis.catalog',return_value=CATALOG):
             payload = embed_payload({'kind':'daily_reminder','course':'SOS','body':body},interactive=True)
             card = payload['embeds'][0]
             self.assertIn('haddock_longue_vue_projet',card['fields'][0]['value'])
@@ -37,7 +37,7 @@ class HaddockEmojiTests(unittest.TestCase):
             self.assertIn('URGENT',card['fields'][2]['value'])
 
     def test_source_recovery_and_health_use_success_emoji(self):
-        with patch('haddock_emojis.catalog',return_value=CATALOG):
+        with patch('courswatch.discord_app.emojis.catalog',return_value=CATALOG):
             card = compact_embed({'kind':'source_recovered','course':'SOS','body':'Accès rétabli'})
             self.assertIn('haddock_joie_depot',card['description'])
             snapshot = {'issues':[],'bot_ready':True,'latency_ms':30,

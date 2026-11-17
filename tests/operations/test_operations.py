@@ -1,6 +1,7 @@
 """Synthetic offline checks for release preparation and import-safe operations."""
 import hashlib
 import importlib.util
+import sys
 import io
 import json
 from pathlib import Path
@@ -13,9 +14,8 @@ from unittest.mock import patch
 from ops.build_release import MANIFEST, build_release, verify_release
 from ops.inventory_runtime import inventory, PROPERTIES
 from ops.verify_models import verify_models
-from prepare_bot_repository import verified_export
-import export_bot_source
-
+from ops.export.prepare_bot_repository import verified_export
+import ops.export.export_bot_source as export_bot_source
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -44,14 +44,21 @@ class OperationsTests(unittest.TestCase):
         with patch("urllib.request.urlopen", forbidden), patch("subprocess.run", forbidden), \
                 patch.object(Path, "mkdir", forbidden), patch.object(Path, "write_text", forbidden), \
                 patch.object(Path, "write_bytes", forbidden), patch("sqlite3.connect", forbidden):
-            for name in ("install_translation_models", "install_reminders", "verify_bot_live"):
-                spec = importlib.util.spec_from_file_location("audit_" + name, ROOT / (name + ".py"))
+            for path in sorted((ROOT / 'ops').glob('*/*.py')):
+                if path.name == '__init__.py':
+                    continue
+                name = '_safe_import_' + path.parent.name + '_' + path.stem
+                spec = importlib.util.spec_from_file_location(name, path)
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                self.assertTrue(callable(module.main))
+                sys.modules[name] = module
+                try:
+                    spec.loader.exec_module(module)
+                    self.assertTrue(callable(getattr(module, 'main', None)), str(path))
+                finally:
+                    sys.modules.pop(name, None)
 
     def test_release_is_deterministic_and_excludes_private_state(self):
-        self.write("course_bot.py")
+        self.write("main.py")
         self.write("requirements-bot.txt", b"discord.py==2.7.1\n")
         self.write("courswatch/runtime.py")
         self.write("systemd/cours-watch.service", b"[Service]\n")
@@ -67,8 +74,18 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(manifest["dependencies"]["requirements-bot.txt"], "discord.py==2.7.1\n")
         self.assertFalse(manifest["dirty"])
 
+    def test_release_limits_media_to_synthetic_fixture_directory_and_main_launcher(self):
+        self.write('main.py')
+        self.write('obsolete_wrapper.py')
+        self.write('tests/fixtures/media/tiny.gif', b'GIF89a')
+        self.write('tests/private.gif', b'private')
+        self.write('media-cache/private.gif', b'private')
+        result = build_release(self.root, self.root / 'release.tar.gz', revision='a' * 40)
+        self.assertEqual({entry['path'] for entry in result['files']},
+                         {'main.py', 'tests/fixtures/media/tiny.gif'})
+
     def test_release_never_overwrites_existing_output(self):
-        self.write("course_bot.py")
+        self.write("main.py")
         target = self.write("release.tar.gz", b"keep")
         with self.assertRaises(FileExistsError):
             build_release(self.root, target, revision="a" * 40)
@@ -87,11 +104,11 @@ class OperationsTests(unittest.TestCase):
         verify_release(target)
 
     def test_release_rejects_tampered_member(self):
-        self.write("course_bot.py", b"original")
+        self.write("main.py", b"original")
         path = self.root / "release.tar.gz"
         manifest = build_release(self.root, path, revision="a" * 40)
         bad = self.root / "tampered.tar"
-        self.bundle(bad, [("course_bot.py", b"changed"), (MANIFEST, json.dumps(manifest).encode())])
+        self.bundle(bad, [("main.py", b"changed"), (MANIFEST, json.dumps(manifest).encode())])
         with self.assertRaisesRegex(ValueError, "hash mismatch"):
             verify_release(bad)
 
@@ -117,7 +134,7 @@ class OperationsTests(unittest.TestCase):
     def test_source_symlink_is_refused(self):
         source = self.write("original.py")
         try:
-            (self.root / "linked.py").symlink_to(source)
+            (self.root / "main.py").symlink_to(source)
         except OSError:
             self.skipTest("Symbolic links unavailable")
         with self.assertRaisesRegex(ValueError, "Symlink"):
@@ -186,7 +203,7 @@ class OperationsTests(unittest.TestCase):
             verify_models(manifest, self.root)
 
     def test_inventory_never_requests_environment_or_reads_private_state(self):
-        self.write("course_bot.py")
+        self.write("main.py")
         self.write("courswatch/runtime.py")
         self.write("reports/private.py", b"private")
         self.write("bot-venv/lib/private.py", b"private")
@@ -195,7 +212,7 @@ class OperationsTests(unittest.TestCase):
             calls.append(args)
             return SimpleNamespace(returncode=0, stdout="User=courswatch\nEnvironment=SECRET\nActiveState=active\n")
         result = inventory(self.root, runner)
-        self.assertEqual(set(result["code_sha256"]), {"course_bot.py", "courswatch/runtime.py"})
+        self.assertEqual(set(result["code_sha256"]), {"main.py", "courswatch/runtime.py"})
         self.assertNotIn("SECRET", json.dumps(result))
         self.assertTrue(all("Environment" not in " ".join(call) for call in calls))
         self.assertNotIn("Environment", PROPERTIES)

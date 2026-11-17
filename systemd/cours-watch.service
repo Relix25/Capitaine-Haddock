@@ -12,7 +12,7 @@ Group=courswatch
 WorkingDirectory=/opt/cours-watch
 Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/cours-watch/browsers
 Environment=COURS_WATCH_SECRETS=/etc/cours-watch/secrets.json
-ExecStart=/opt/cours-watch/venv/bin/python /opt/cours-watch/cours_watch.py scan
+ExecStart=/opt/cours-watch/venv/bin/python -m courswatch.runtime scan
 SuccessExitStatus=2
 UMask=0077
 TimeoutStartSec=15min

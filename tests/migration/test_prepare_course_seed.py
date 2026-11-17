@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 PYTHON_EXE = Path(sys.executable)
-SCRIPT = Path(__file__).resolve().parents[2] / "prepare_course_seed.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "ops/migration/prepare_course_seed.py"
 COURSE_DIRS = (
     "Advanced artificial intelligence techniques",
     "AI for Trustworthy Decision Making",

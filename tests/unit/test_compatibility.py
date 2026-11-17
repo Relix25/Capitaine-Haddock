@@ -15,25 +15,42 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class CompatibilityTests(unittest.TestCase):
-    def test_legacy_and_canonical_imports_share_the_same_module(self):
+    def test_canonical_modules_import_without_root_wrappers(self):
+        self.assertEqual({path.name for path in ROOT.glob('*.py')}, {'main.py'})
         for legacy, target in ALIASES.items():
-            with self.subTest(module=legacy):
-                self.assertIs(importlib.import_module(legacy), importlib.import_module(target))
+            with self.subTest(module=target):
+                self.assertFalse((ROOT / (legacy + '.py')).exists())
+                self.assertIsNotNone(importlib.import_module(target))
 
     def test_monkeypatches_reach_the_canonical_implementation(self):
-        legacy = importlib.import_module('course_bot')
-        canonical = importlib.import_module(ALIASES['course_bot'])
-        with patch('course_bot.configuration', return_value={'synthetic': True}):
+        canonical = importlib.import_module('courswatch.discord_app.bot')
+        with patch('courswatch.discord_app.bot.configuration', return_value={'synthetic': True}):
             self.assertEqual(canonical.configuration(), {'synthetic': True})
-            self.assertIs(legacy.configuration, canonical.configuration)
 
-    def test_legacy_help_commands_remain_available_without_state_access(self):
-        for script in ('cours_watch.py', 'course_pdf_publish.py', 'course_obsidian.py', 'publish_course_vault.py'):
-            with self.subTest(script=script):
-                result = subprocess.run([sys.executable, '-B', str(ROOT / script), '--help'],
-                                        capture_output=True, text=True, timeout=20)
+    def test_module_help_commands_remain_available_without_state_access(self):
+        for module in ('courswatch', 'courswatch.documents.publish',
+                       'courswatch.publishing.obsidian', 'courswatch.publishing.vault'):
+            with self.subTest(module=module):
+                result = subprocess.run([sys.executable, '-B', '-m', module, '--help'],
+                                        capture_output=True, text=True, timeout=20, cwd=ROOT)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('usage:', result.stdout)
+
+    def test_main_import_and_dispatch_do_not_start_the_real_bot(self):
+        with patch('courswatch.discord_app.bot.main') as start:
+            import runpy
+            runpy.run_path(str(ROOT / 'main.py'), run_name='launcher_import')
+            start.assert_not_called()
+            runpy.run_path(str(ROOT / 'main.py'), run_name='__main__')
+            start.assert_called_once_with()
+
+    def test_relocated_tool_defaults_preserve_the_original_logical_roots(self):
+        from ops.export import prepare_bot_repository as repository
+        from ops.migration import prepare_course_seed as seed
+        self.assertEqual(repository.SOURCE, ROOT)
+        self.assertEqual(repository.ROOT, ROOT.parents[1])
+        args = seed.parse_args([])
+        self.assertEqual(Path(args.root), ROOT.parents[1])
 
     def test_application_imports_do_not_depend_on_legacy_entry_points(self):
         for path in (ROOT / 'courswatch').rglob('*.py'):

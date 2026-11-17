@@ -9,9 +9,9 @@ import unittest
 import discord
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from course_bot import CourseBot
-from luna_brain import BUDGET_REPLY, BudgetExhausted, ChatMemory, ChatCadence, LunaError, OFFLINE_REPLY, REFUSAL_REPLY
-from luna_chat import LunaChat
+from courswatch.discord_app.bot import CourseBot
+from courswatch.conversation.brain import BUDGET_REPLY, BudgetExhausted, ChatMemory, ChatCadence, LunaError, OFFLINE_REPLY, REFUSAL_REPLY
+from courswatch.conversation.chat import LunaChat
 from courswatch.conversation.metrics import MeasuredResult
 
 
@@ -241,8 +241,8 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
     async def test_scope_filters_precede_any_ai_context_collection(self):
         config = {'discord':{'guild_id':'1','channel_id':'2','role_ids':['3'],
             'application_id':'99','luna':{'enabled':True}}}
-        with tempfile.TemporaryDirectory() as directory,patch('course_bot.configuration',return_value=config), \
-             patch('course_bot.DATA',Path(directory)),patch('luna_brain.read_api_key',return_value='fake'):
+        with tempfile.TemporaryDirectory() as directory,patch('courswatch.discord_app.bot.configuration',return_value=config), \
+             patch('courswatch.discord_app.bot.DATA',Path(directory)),patch('courswatch.conversation.brain.read_api_key',return_value='fake'):
             bot = CourseBot('fake')
             bot.luna.accept = MagicMock()
             for message in [self.message(guild=None),self.message(channel=SimpleNamespace(id=999)),
@@ -260,7 +260,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat = self.chat()
         chat.bot.voice_samples = [SimpleNamespace(id='cafe')]
         message = self.message()
-        with patch('luna_chat.send_voice_message') as send,patch('luna_chat.random.random',return_value=.1):
+        with patch('courswatch.conversation.chat.send_voice_message') as send,patch('courswatch.conversation.chat.random.random',return_value=.1):
             await chat.deliver(message,{'action':'text','reply':'Voici le plan.','sample_id':'none'},True)
             send.assert_not_called()
         message.reply.assert_awaited_once()
@@ -302,13 +302,13 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         await chat.close()
 
     async def test_contextual_sample_can_be_sent_and_audio_failure_returns_model_text(self):
-        from haddock_voice import VoiceMessageError
+        from courswatch.conversation.voice import VoiceMessageError
         chat = self.chat()
         chat.bot.voice_samples = [SimpleNamespace(id='cafe')]
         message = self.message()
         choice = {'action':'sample','reply':'Ce café a décidé de prendre le large !','sample_id':'cafe'}
-        with patch('luna_chat.random.random',return_value=.1), \
-             patch('luna_chat.send_voice_message',return_value={'id':'987'}) as send:
+        with patch('courswatch.conversation.chat.random.random',return_value=.1), \
+             patch('courswatch.conversation.chat.send_voice_message',return_value={'id':'987'}) as send:
             await chat.deliver(message,choice,True)
             send.assert_called_once()
             message.reply.assert_not_awaited()
@@ -316,8 +316,8 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(message.channel.send.await_args.kwargs['reference'].message_id,987)
             self.assertFalse(message.channel.send.await_args.kwargs['allowed_mentions'].roles)
         chat.bot.last_voice_sample = None
-        with patch('luna_chat.random.random',return_value=.1), \
-             patch('luna_chat.send_voice_message',side_effect=VoiceMessageError('unavailable')):
+        with patch('courswatch.conversation.chat.random.random',return_value=.1), \
+             patch('courswatch.conversation.chat.send_voice_message',side_effect=VoiceMessageError('unavailable')):
             await chat.deliver(message,choice,True)
             self.assertEqual(self.spoken_reply(message),choice['reply'])
         await chat.close()
@@ -344,8 +344,8 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat.bot.voice_samples=[SimpleNamespace(id='cafe')]
         message.channel.send.side_effect=discord.HTTPException(SimpleNamespace(status=500,reason='synthetic'),
                                                                {'message':'PRIVATE_SENTINEL','code':0})
-        with patch('luna_chat.random.random',return_value=.1), \
-             patch('luna_chat.send_voice_message',return_value={'id':'987'}):
+        with patch('courswatch.conversation.chat.random.random',return_value=.1), \
+             patch('courswatch.conversation.chat.send_voice_message',return_value={'id':'987'}):
             await chat.deliver(message,{'action':'sample','reply':'Un café récalcitrant.','sample_id':'cafe'},True)
         message.reply.assert_not_awaited()
         self.assertIn(987,chat.memory.bot_ids)
@@ -366,8 +366,8 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
     async def test_debug_off_sends_voice_without_companion_metrics_message(self):
         chat=self.chat();chat.debug_enabled=False;message=self.message()
         chat.bot.voice_samples=[SimpleNamespace(id='cafe')]
-        with patch('luna_chat.random.random',return_value=.1), \
-             patch('luna_chat.send_voice_message',return_value={'id':'987'}):
+        with patch('courswatch.conversation.chat.random.random',return_value=.1), \
+             patch('courswatch.conversation.chat.send_voice_message',return_value={'id':'987'}):
             await chat.deliver(message,{'action':'sample','reply':'Un café.','sample_id':'cafe'},True)
         message.reply.assert_not_awaited()
         message.channel.send.assert_not_awaited()

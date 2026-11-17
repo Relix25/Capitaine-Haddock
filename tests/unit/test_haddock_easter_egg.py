@@ -1,5 +1,5 @@
 import unittest
-from haddock_easter_egg import HaddockEasterEgg, QUOTES, triggered
+from courswatch.conversation.easter_egg import HaddockEasterEgg, QUOTES, triggered
 
 
 class EasterEggTests(unittest.TestCase):

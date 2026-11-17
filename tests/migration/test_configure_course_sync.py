@@ -10,9 +10,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from unittest import mock
 
-import configure_course_sync as sync
-
-
+import ops.configuration.configure_course_sync as sync
 SERVER = sync.SERVER_ID_DEFAULT
 PC = sync.PC_ID_DEFAULT
 

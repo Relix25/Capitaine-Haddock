@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-from cours_watch import Item, Result, State
-from course_health import build_status_snapshot, status_embed
-from luna_brain import TokenBudget, BudgetExhausted
+from courswatch.runtime import Item, Result, State
+from courswatch.discord_app.health import build_status_snapshot, status_embed
+from courswatch.conversation.brain import TokenBudget, BudgetExhausted
 
 
 class HealthTests(unittest.TestCase):

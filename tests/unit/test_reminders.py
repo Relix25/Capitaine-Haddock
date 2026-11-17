@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-from cours_watch import Item, Result, State
-from course_reminders import body_hash, enqueue_daily_reminders, parse_moodle_due, reminder_events, urgency
+from courswatch.runtime import Item, Result, State
+from courswatch.reminders import body_hash, enqueue_daily_reminders, parse_moodle_due, reminder_events, urgency
 
 
 class ReminderTests(unittest.TestCase):

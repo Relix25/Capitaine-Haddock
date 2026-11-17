@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 PYTHON_EXE = Path(sys.executable)
-SCRIPT = Path(__file__).resolve().parents[2] / "apply_course_seed_pc.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "ops/migration/apply_course_seed_pc.py"
 MANIFEST_NAME = "Corpus - manifeste.json"
 
 

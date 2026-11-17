@@ -9,7 +9,7 @@ import unittest
 from pypdf import PdfWriter
 
 from courswatch.documents.identities import attachment_archive_keys
-from moodle_pdf_versions import PdfArchiveError, _safe_catalog_key, archive_pdf
+from courswatch.documents.versions import PdfArchiveError, _safe_catalog_key, archive_pdf
 
 
 def pdf(pages):

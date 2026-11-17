@@ -2,7 +2,7 @@
 
 ## Organisation du code
 
-Les implémentations résident dans `courswatch/`. Les vingt modules applicatifs historiques à la racine sont des adaptateurs vers les mêmes objets modules : anciens imports, configuration et patches de tests ne divergent pas entre deux copies. Le collecteur se lance aussi par `python -m courswatch`.
+Les implémentations résident dans `courswatch/`. `main.py` est le seul fichier Python à la racine et démarre le bot. Les anciens adaptateurs ont été retirés après migration des imports et des patches vers les modules canoniques. Le collecteur se lance par `python -m courswatch`, les outils par `python -m ops.<dossier>.<module>`.
 
 | Module ou dossier | Responsabilité |
 |---|---|

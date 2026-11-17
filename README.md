@@ -40,14 +40,14 @@ Les limites de couverture et les garanties de livraison figurent dans [l'archite
 |---|---|
 | [`courswatch/`](courswatch/) | Implémentations du bot, collecteurs, stockage, documents, publication et conversation |
 | [`tests/`](tests/) | Tests unitaires, intégration sur fixtures, migrations et exploitation |
-| [`ops/`](ops/) | Construction/vérification des lots, inventaire et validation synthétique du salon |
+| [`ops/`](ops/) | Outils rangés par configuration, diagnostic, probes explicites, maintenance, migration, assets et export |
 | [`tools/run_tests.py`](tools/run_tests.py) | Profils de tests isolés |
 | [`systemd/`](systemd/) | Unités et drop-ins de référence, sans deuxième copie à la racine |
 | [`examples/`](examples/) | Exemples de configuration sans authentification |
 | [`assets/`](assets/) | Images, voix, sources et empreintes |
 | [`docs/`](docs/) | Architecture, exploitation et compte rendu CommandCode ; anciens états dans `docs/history/` |
 
-Les vingt modules applicatifs et vingt-sept modules de tests historiques à la racine sont de petits adaptateurs, pas des implémentations dupliquées. Ils conservent les imports, les patches et les anciens chemins CLI. Les autres outils racine maintenus servent à la configuration, au diagnostic ou à la maintenance.
+La racine ne contient que `main.py` comme fichier Python : ce lanceur démarre le bot existant. Les 20 adaptateurs applicatifs et 27 adaptateurs de tests ont été retirés après migration des appelants vers les modules canoniques. Les 42 outils sont rangés sous `ops/configuration`, `ops/diagnostics`, `ops/probes`, `ops/maintenance`, `ops/migration`, `ops/assets` et `ops/export` ; ils se lancent avec `python -m ops.<dossier>.<module>`. Leurs imports ne déclenchent aucune opération. Les probes réelles restent des opérations explicites.
 
 Les scripts ponctuels d'anciennes activations, installations, retouches de messages et rédaction de notes ont été retirés. Leurs sources restent consultables dans Git, notamment dans l'état `14f2040` précédant le nettoyage. Les anciens installateurs qui ne copiaient que les modules racine ne doivent plus servir au package actuel.
 
@@ -65,7 +65,7 @@ python -B tools/run_tests.py all
 
 Le runner isole les configurations et les fichiers temporaires, retire les clés connues de l'environnement et bloque le réseau externe. Les modèles de traduction ne sont pas nécessaires aux tests simulés. Les tests POSIX et de liens symboliques doivent également être exécutés sous Linux ; un test ignoré sous Windows ne les valide pas.
 
-Les anciens appels `python -m unittest test_course_tasks ...` restent compatibles. Employer les [profils explicites](tests/README.md) pour éviter de découvrir deux fois les adaptateurs et leurs implémentations.
+Employer les [profils explicites](tests/README.md) ou les noms canoniques, par exemple `python -m unittest tests.unit.test_course_tasks`. Les anciens noms racine ne sont plus disponibles.
 
 Les essais réels sont séparés des tests isolés. `scan --dry-run` effectue une lecture réseau depuis une copie temporaire de la session dédiée ; il ne livre aucune notification et ne modifie ni la base, ni le rapport, ni la session d'origine. `python -m ops.validate_channel --send-test` utilise des cartes synthétiques et impose l'absence de mentions. Les autorisations de tests et la procédure GitHub sont dans [AGENTS.md](AGENTS.md).
 

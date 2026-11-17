@@ -13,6 +13,8 @@ import tarfile
 
 MANIFEST = "RELEASE-MANIFEST.json"
 PACKAGE_DATA = {"courswatch/conversation/prompt-haddock.txt"}
+FIXTURE_ROOT = "tests/fixtures/media"
+FIXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".json"}
 TREE_SUFFIXES = {
     "courswatch": {".py"}, "ops": {".py"}, "tools": {".py"},
     "tests": {".py", ".md"}, "systemd": {".service", ".timer", ".path", ".conf"},
@@ -34,8 +36,10 @@ def allowed_source(name):
     path = safe_name(name)
     if name in PACKAGE_DATA:
         return True
+    if path.is_relative_to(FIXTURE_ROOT) and path.suffix in FIXTURE_SUFFIXES:
+        return True
     if len(path.parts) == 1:
-        return (path.suffix in {".py", ".sh"} or name == "README.md"
+        return (name == "main.py" or path.suffix == ".sh" or name == "README.md"
                 or (name.startswith("requirements") and path.suffix in {".lock", ".txt"}))
     return path.parts[0] in TREE_SUFFIXES and path.suffix in TREE_SUFFIXES[path.parts[0]]
 
@@ -45,7 +49,7 @@ def source_files(root):
     root = Path(root).resolve()
     selected = []
     for path in root.iterdir():
-        if path.is_file() and (path.suffix in {".py", ".sh"}
+        if path.is_file() and (path.name == "main.py" or path.suffix == ".sh"
                                or path.name == "README.md"
                                or (path.name.startswith("requirements") and path.suffix in {".lock", ".txt"})):
             selected.append(path)
@@ -57,8 +61,14 @@ def source_files(root):
             selected.extend(path for path in folder.rglob("*")
                             if path.is_file() and path.suffix in suffixes
                             and not any(part in FORBIDDEN for part in path.relative_to(root).parts))
+    fixture_dir = root / FIXTURE_ROOT
+    if fixture_dir.is_symlink():
+        raise ValueError("Symlinked fixture directory")
+    if fixture_dir.exists():
+        selected.extend(path for path in fixture_dir.rglob("*")
+                        if path.is_file() and path.suffix in FIXTURE_SUFFIXES)
     selected.extend(root / name for name in PACKAGE_DATA if (root / name).is_file())
-    for path in sorted(selected):
+    for path in sorted(set(selected)):
         name = path.relative_to(root).as_posix()
         if not allowed_source(name):
             raise ValueError("Unexpected release source")

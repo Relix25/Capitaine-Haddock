@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cours_watch import Item, Result, State, import_cookies, notify, format_notification, moodle_cookies, save_moodle_cookies, canonical_forum_url, load_discord_secrets
+from courswatch.runtime import Item, Result, State, import_cookies, notify, format_notification, moodle_cookies, save_moodle_cookies, canonical_forum_url, load_discord_secrets
 
 
 class StateTests(unittest.TestCase):
@@ -50,11 +50,11 @@ class StateTests(unittest.TestCase):
         self.state.ingest(self.result('@everyone malicious content'))
         configuration = {'mode': 'webhook', 'user_ids': ['123456789012345678'], 'role_ids': []}
         secrets = {'DISCORD_WEBHOOK_URL': 'https://discord.com/api/webhooks/123456789012345678/not-a-real-token'}
-        with patch('cours_watch.discord_request', side_effect=RuntimeError('network')):
+        with patch('courswatch.runtime.discord_request', side_effect=RuntimeError('network')):
             with self.assertRaises(RuntimeError):
                 notify(self.state, configuration, secrets)
         self.assertEqual(len(self.state.pending()), 1)
-        with patch('cours_watch.discord_request', return_value={'id': 'mock-message'}) as send:
+        with patch('courswatch.runtime.discord_request', return_value={'id': 'mock-message'}) as send:
             self.assertEqual(notify(self.state, configuration, secrets)['events_delivered'], 1)
             payload = send.call_args.args[1]
             self.assertEqual(payload['allowed_mentions']['parse'], [])

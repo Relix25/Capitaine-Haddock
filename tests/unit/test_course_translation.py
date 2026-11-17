@@ -2,12 +2,13 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from course_translation import eligible, cache_key, prepare_events, with_cached_translation
-from discord_presentation import compact_embed, private_details
-from cours_watch import State, notify
+from courswatch.translation import eligible, cache_key, prepare_events, with_cached_translation
+from courswatch.discord_app.presentation import compact_embed, private_details
+from courswatch.runtime import State, notify
 
 
 class TranslationTests(unittest.TestCase):
@@ -30,7 +31,7 @@ class TranslationTests(unittest.TestCase):
     def test_cache_reuses_translation_and_never_mutates_original(self):
         event = self.event()
         original = deepcopy(event)
-        with tempfile.TemporaryDirectory() as directory, patch('course_translation.settings',return_value={'enabled':True}):
+        with tempfile.TemporaryDirectory() as directory, patch('courswatch.translation.settings',return_value={'enabled':True}):
             root = Path(directory)
             first = prepare_events([event],root,self.worker)[0]
             second = prepare_events([event],root,lambda request:self.fail('Cache was not reused'))[0]
@@ -41,7 +42,7 @@ class TranslationTests(unittest.TestCase):
             self.assertNotEqual(cache_key(event),cache_key({**event,'body':'Updated announcement'}))
 
     def test_failed_engine_keeps_original_and_can_retry(self):
-        with tempfile.TemporaryDirectory() as directory, patch('course_translation.settings',return_value={'enabled':True}):
+        with tempfile.TemporaryDirectory() as directory, patch('courswatch.translation.settings',return_value={'enabled':True}):
             root = Path(directory)
             def broken(request):
                 raise OSError('unavailable')
@@ -52,8 +53,22 @@ class TranslationTests(unittest.TestCase):
             fixed = prepare_events([self.event()],root,self.worker)[0]
             self.assertEqual(fixed['translation']['status'],'translated')
 
+    def test_default_worker_uses_module_with_explicit_cwd_and_filtered_environment(self):
+        result = SimpleNamespace(stdout='[]')
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('courswatch.translation.settings', return_value={'enabled': True}), \
+                patch('courswatch.translation.subprocess.run', return_value=result) as run:
+            prepare_events([self.event()], Path(directory))
+        self.assertEqual(run.call_args.args[0],
+                         ['/opt/cours-watch/translation-venv/bin/python', '-m',
+                          'courswatch.translation_worker'])
+        self.assertEqual(run.call_args.kwargs['cwd'], Path(__file__).resolve().parents[2])
+        self.assertNotIn('PYTHONPATH', run.call_args.kwargs['env'])
+        self.assertEqual(set(run.call_args.kwargs['env']),
+                         {'PATH', 'LANG', 'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS'})
+
     def test_public_card_is_french_and_private_details_keep_both_versions_without_pings(self):
-        with tempfile.TemporaryDirectory() as directory, patch('course_translation.settings',return_value={'enabled':True}):
+        with tempfile.TemporaryDirectory() as directory, patch('courswatch.translation.settings',return_value={'enabled':True}):
             event = prepare_events([self.event()],Path(directory),self.worker)[0]
             card = compact_embed(event,interactive=True)
             self.assertIn('Présentation',card['title'])
@@ -66,7 +81,7 @@ class TranslationTests(unittest.TestCase):
             self.assertNotIn('@everyone',details)
 
     def test_notify_sends_french_but_retains_raw_outbox_and_snapshot(self):
-        with tempfile.TemporaryDirectory() as directory, patch('course_translation.settings',return_value={'enabled':True}):
+        with tempfile.TemporaryDirectory() as directory, patch('courswatch.translation.settings',return_value={'enabled':True}):
             root = Path(directory)
             state = State(root / 'state.db')
             try:
@@ -75,7 +90,7 @@ class TranslationTests(unittest.TestCase):
                 prepare_events([event],root,self.worker)
                 config = {'mode':'bot_channel','channel_id':'1570209088929800282','user_ids':[],
                           'role_ids':['1570209160744673411'],'presentation':'embed','interactive':True}
-                with patch('cours_watch.discord_request',return_value={'id':'1570230953404665994','channel_id':config['channel_id']}) as request:
+                with patch('courswatch.runtime.discord_request',return_value={'id':'1570230953404665994','channel_id':config['channel_id']}) as request:
                     notify(state,config,{'DISCORD_BOT_TOKEN':'fake'})
                 payload = request.call_args.args[1]
                 self.assertIn('Déposez',payload['embeds'][0]['description'])

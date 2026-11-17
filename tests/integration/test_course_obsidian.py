@@ -2,9 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import course_obsidian
-
-
+import courswatch.publishing.obsidian as course_obsidian
 def item(source="teams:AAIT", key="message-1", title="Message    important", body="Premier paragraphe.\n\nDeuxième paragraphe."):
     return {
         "source": source,

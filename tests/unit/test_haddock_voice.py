@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import urllib.error
 
-from haddock_voice import (load_samples,choose_sample,voice_payload,multipart_body,
+from courswatch.conversation.voice import (load_samples,choose_sample,voice_payload,multipart_body,
                            send_voice_message,VoiceMessageError,VOICE_FLAG)
 
 
@@ -66,14 +66,14 @@ class VoiceTests(unittest.TestCase):
     def test_api_must_confirm_a_native_voice_message(self):
         sample = load_samples(self.root)[0]
         response = io.BytesIO(json.dumps({'id':'123','flags':0,'attachments':[{}]}).encode())
-        with patch('haddock_voice.urllib.request.urlopen',return_value=response):
+        with patch('courswatch.conversation.voice.urllib.request.urlopen',return_value=response):
             with self.assertRaises(VoiceMessageError):
                 send_voice_message('1570209088929800282','fake-secret',sample,'test')
 
     def test_api_error_does_not_expose_bot_token(self):
         sample = load_samples(self.root)[0]
         error = urllib.error.HTTPError('https://discord.com/api/v10/channels/1/messages',403,'Forbidden',{},io.BytesIO(b'{}'))
-        with patch('haddock_voice.urllib.request.urlopen',side_effect=error):
+        with patch('courswatch.conversation.voice.urllib.request.urlopen',side_effect=error):
             with self.assertRaises(VoiceMessageError) as caught:
                 send_voice_message('1570209088929800282','fake-private-token',sample,'test')
         self.assertIn('403',str(caught.exception))

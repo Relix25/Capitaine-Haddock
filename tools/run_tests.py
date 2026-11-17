@@ -24,27 +24,27 @@ def course_vault():
 
 PROFILES = {
     "core": (
-        "test_course_tasks", "test_course_bot", "test_reminders",
-        "test_discord_presentation", "test_course_health", "test_state",
+        "tests.unit.test_course_tasks", "tests.unit.test_course_bot", "tests.unit.test_reminders",
+        "tests.unit.test_discord_presentation", "tests.unit.test_course_health", "tests.unit.test_state",
     ),
     "conversation": (
-        "test_luna_brain", "test_luna_chat", "test_esn_watch",
-        "test_haddock_voice", "test_haddock_emojis",
-        "test_haddock_easter_egg", "test_course_translation", "tests.unit.test_conversation_metrics", "tests.unit.test_model_switch",
+        "tests.unit.test_luna_brain", "tests.unit.test_luna_chat", "tests.unit.test_esn_watch",
+        "tests.unit.test_haddock_voice", "tests.unit.test_haddock_emojis",
+        "tests.unit.test_haddock_easter_egg", "tests.unit.test_course_translation", "tests.unit.test_conversation_metrics", "tests.unit.test_model_switch",
     ),
     "documents": (
-        "test_moodle_pdf_versions", "test_moodle_pdf_collection", "test_attachment_bindings",
-        "test_course_pdf_publish", "test_course_obsidian", "test_course_capture",
+        "tests.integration.test_moodle_pdf_versions", "tests.integration.test_moodle_pdf_collection", "tests.integration.test_attachment_bindings",
+        "tests.integration.test_course_pdf_publish", "tests.integration.test_course_obsidian", "tests.integration.test_course_capture",
     ),
     "migration": (
-        "test_configure_course_sync", "test_prepare_course_seed",
-        "test_apply_course_seed_pc",
+        "tests.migration.test_configure_course_sync", "tests.migration.test_prepare_course_seed",
+        "tests.migration.test_apply_course_seed_pc",
     ),
     "regression": (
-        "test_pipeline", "test_schema", "test_compatibility", "test_refresh", "tests.unit.test_responses",
+        "tests.unit.test_pipeline", "tests.unit.test_schema", "tests.unit.test_compatibility", "tests.unit.test_refresh", "tests.unit.test_responses",
     ),
     "operations": (
-        "test_operations", "tests.operations.test_channel_validation",
+        "tests.operations.test_operations", "tests.operations.test_channel_validation",
     ),
 }
 

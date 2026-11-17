@@ -11,7 +11,7 @@ Type=simple
 User=courswatch
 Group=courswatch
 WorkingDirectory=/opt/cours-watch
-ExecStart=/opt/cours-watch/bot-venv/bin/python /opt/cours-watch/course_bot.py
+ExecStart=/opt/cours-watch/bot-venv/bin/python /opt/cours-watch/main.py
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=10

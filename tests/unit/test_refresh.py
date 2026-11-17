@@ -8,15 +8,15 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import course_bot
+from courswatch.settings import scan_command
 
-
+import courswatch.discord_app.bot as course_bot
 class RefreshTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         configuration = {"discord": {"guild_id": "1", "channel_id": "2", "role_ids": ["3"]}}
-        self.enterContext(patch("course_bot.configuration", return_value=configuration))
-        self.enterContext(patch("course_bot.read_json", return_value={}))
-        self.spawn = self.enterContext(patch("course_bot.asyncio.create_subprocess_exec", new_callable=AsyncMock))
+        self.enterContext(patch("courswatch.discord_app.bot.configuration", return_value=configuration))
+        self.enterContext(patch("courswatch.discord_app.bot.read_json", return_value={}))
+        self.spawn = self.enterContext(patch("courswatch.discord_app.bot.asyncio.create_subprocess_exec", new_callable=AsyncMock))
         self.bot = course_bot.CourseBot("synthetic-not-a-token")
         self.bot.authorize = AsyncMock(return_value=True)
         self.bot.write_status = MagicMock()
@@ -49,10 +49,16 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(call.kwargs.get("ephemeral") for call in self.interaction.followup.send.await_args_list))
         self.interaction.response.send_message.assert_not_awaited()
 
+    async def test_default_collector_argv_uses_the_canonical_package(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(scan_command('fixture-data', 'fixture-config'),
+                             ['/opt/cours-watch/venv/bin/python', '-m', 'courswatch', 'scan',
+                              '--config', 'fixture-config', '--data-dir', 'fixture-data'])
+
     async def test_callback_passes_configured_paths_to_the_real_subprocess_boundary(self):
         self.child()
         data, config = Path("isolated fixture/data"), Path("isolated fixture/config.json")
-        with patch("course_bot.DATA", data), patch("course_bot.CONFIG", config), patch.dict(os.environ, {
+        with patch("courswatch.discord_app.bot.DATA", data), patch("courswatch.discord_app.bot.CONFIG", config), patch.dict(os.environ, {
             "COURS_WATCH_PYTHON": "isolated fixture/python",
             "COURS_WATCH_COLLECTOR": "isolated fixture/collector.py",
         }):

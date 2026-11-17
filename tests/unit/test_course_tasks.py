@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-from cours_watch import State, Item, Result
-from course_reminders import body_hash, reminder_events
-from course_tasks import task_rows, task_pages
+from courswatch.runtime import State, Item, Result
+from courswatch.reminders import body_hash, reminder_events
+from courswatch.discord_app.tasks import task_rows, task_pages
 
 
 class TaskTests(unittest.TestCase):

@@ -1,14 +1,10 @@
 # Profils de validation hors ligne
 
 Les implémentations sont rangées dans `tests/unit`, `tests/integration`,
-`tests/migration` et `tests/operations`. Les fichiers à la racine sont des
-adaptateurs : les imports historiques et canoniques partagent le même module,
-et `python -m unittest test_nom` ainsi que `python test_nom.py` restent utilisables.
-Le runner sélectionne les noms historiques par une liste explicite ; il ne
-découvre aucun installateur, script `smoke_*` ou `probe_*`.
-
-Utiliser ces profils explicites évite de collecter deux fois les mêmes tests en
-découvrant récursivement les adaptateurs et leurs implémentations.
+`tests/migration` et `tests/operations`. Le runner sélectionne explicitement
+leurs modules canoniques, une seule fois ; les 27 adaptateurs racine ont été
+retirés. Il ne découvre aucun installateur, script `smoke_*` ou `probe_*`.
+Un test précis se lance par `python -m unittest tests.unit.test_nom`.
 
 ```bash
 python -B tools/run_tests.py core
@@ -29,7 +25,7 @@ d'utiliser un environnement de dépendances déjà installé, sans installation.
 | `conversation` | Luna/quota avec transport factice, ESN, voix, répliques, traduction |
 | `documents` | Collecte PDF factice, identités des pièces jointes, versions SHA256, publication et notes gérées |
 | `migration` | Configuration Syncthing synthétique et migration historique sur fixtures |
-| `regression` | Transitions de fraîcheur et de pipeline, migrations de schéma, adaptateurs compatibles |
+| `regression` | Transitions de fraîcheur et de pipeline, migrations de schéma, imports canoniques et points d’entrée |
 | `operations` | Construction et intégrité des lots, inventaire factice, outils importables sans effets |
 | `all` | Union des six profils explicites, sans doublon |
 

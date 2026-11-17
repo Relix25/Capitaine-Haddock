@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from course_pdf_publish import PublishError, publish_pdf_versions
+from courswatch.documents.publish import PublishError, publish_pdf_versions
 
 
 PYTHON_EXE = Path(sys.executable)
@@ -279,7 +279,7 @@ class CoursePdfPublishTests(unittest.TestCase):
         vault = self.run_root / "vault_cli"
         vault.mkdir()
         result = subprocess.run(
-            [str(PYTHON_EXE), "-X", "utf8", str(Path(__file__).resolve().parents[2] / "course_pdf_publish.py"),
+            [str(PYTHON_EXE), "-X", "utf8", "-m", "courswatch.documents.publish",
              str(store), str(vault)],
             capture_output=True,
             text=True,

@@ -10,8 +10,8 @@ import unittest
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import cours_watch as watch
-from course_reminders import resolve_task
+import courswatch.runtime as watch
+from courswatch.reminders import resolve_task
 from courswatch.settings import scan_command
 
 
@@ -67,9 +67,9 @@ class PipelineTests(unittest.TestCase):
             state = watch.State(root / 'state.db')
             state.ingest(watch.Result('teams:AUDIT', 'AUDIT', 'ok', []))
             state.db.close()
-            with patch('cours_watch.load_discord_secrets', return_value={}), \
-                 patch('cours_watch.notify', side_effect=RuntimeError('private secret')), \
-                 patch('course_capture.publish_snapshot', return_value={'status': 'ok'}) as publish:
+            with patch('courswatch.runtime.load_discord_secrets', return_value={}), \
+                 patch('courswatch.runtime.notify', side_effect=RuntimeError('private secret')), \
+                 patch('courswatch.publishing.capture.publish_snapshot', return_value={'status': 'ok'}) as publish:
                 report = watch.complete_scan({}, root, [watch.Result('teams:AUDIT', 'AUDIT', 'ok', [item])])
             self.assertEqual(report['delivery']['status'], 'error')
             self.assertEqual(report['status'], 'partial')
@@ -102,7 +102,7 @@ class PipelineTests(unittest.TestCase):
                 (data / 'browser-profile/fixture').write_bytes(b'modified clone')
                 return 0
 
-            with patch('cours_watch._scan_browser', side_effect=fake_scan):
+            with patch('courswatch.runtime._scan_browser', side_effect=fake_scan):
                 self.assertEqual(asyncio.run(watch.scan({}, source, True)), 0)
             self.assertEqual(original.read_bytes(), b'original')
             self.assertEqual(cookie.read_text(), '[]')
@@ -111,8 +111,8 @@ class PipelineTests(unittest.TestCase):
     def test_dry_completion_never_opens_state_secrets_or_report_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch('cours_watch.State', side_effect=AssertionError('state accessed')), \
-                 patch('cours_watch.load_discord_secrets', side_effect=AssertionError('secrets accessed')):
+            with patch('courswatch.runtime.State', side_effect=AssertionError('state accessed')), \
+                 patch('courswatch.runtime.load_discord_secrets', side_effect=AssertionError('secrets accessed')):
                 report = watch.complete_scan({}, root, [], dry_run=True)
             self.assertTrue(report['dry_run'])
             self.assertEqual(list(root.iterdir()), [])

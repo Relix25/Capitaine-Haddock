@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from esn_watch import EventState,ParseError,canonical_url,deliver,discover_role,notification,parse_page
+from courswatch.collectors.esn import EventState,ParseError,canonical_url,deliver,discover_role,notification,parse_page
 
 
 def page(links,**extra):

@@ -10,9 +10,9 @@ import unittest
 import discord
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from bot_ui_data import find_event, remember_private_card
-from cours_watch import State
-from course_bot import CourseBot, DetailsView, TaskListView
+from courswatch.discord_app.ui_data import find_event, remember_private_card
+from courswatch.runtime import State
+from courswatch.discord_app.bot import CourseBot, DetailsView, TaskListView
 
 
 def command_response():
@@ -32,7 +32,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                            'application_id':'1510767148006641866','role_ids':['1570209160744673411']}}
 
     async def test_commands_are_scoped_to_the_course_server_and_no_privileged_intents(self):
-        with patch('course_bot.configuration',return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()):
             bot = CourseBot('fake-not-a-token')
             commands = bot.tree.get_commands(guild=bot.scope)
             self.assertEqual({c.name for c in commands},{'cours','actualiser','status','a-faire','settings'})
@@ -47,7 +47,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_unauthorized_member_gets_no_course_details(self):
         interaction = SimpleNamespace(guild_id=1376984512046563519,channel_id=1570209088929800282,
             user=SimpleNamespace(roles=[SimpleNamespace(id=999)]),response=SimpleNamespace(send_message=AsyncMock()))
-        with patch('course_bot.configuration',return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()):
             bot = CourseBot('fake-not-a-token')
             self.assertFalse(await bot.authorize(interaction))
             self.assertTrue(interaction.response.send_message.await_args.kwargs['ephemeral'])
@@ -58,7 +58,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(message=SimpleNamespace(id=123),user=SimpleNamespace(id=456),
             response=SimpleNamespace(defer=AsyncMock()),followup=SimpleNamespace(send=AsyncMock()))
         event = {'course':'SOS','title':'Détails','body':'Consignes de la présentation','url':'https://curs.upb.ro/'}
-        with patch('course_bot.find_event',return_value=event):
+        with patch('courswatch.discord_app.bot.find_event',return_value=event):
             await DetailsView(client).details.callback(interaction)
         self.assertTrue(interaction.response.defer.await_args.kwargs['ephemeral'])
         self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
@@ -78,9 +78,9 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(guild_id=1376984512046563519,channel_id=1570209088929800282,
             user=SimpleNamespace(roles=[SimpleNamespace(id=1570209160744673411)]),
             response=command_response(),followup=SimpleNamespace(send=AsyncMock()))
-        with patch('course_bot.configuration',return_value=self.config()), \
-             patch('course_bot.build_status_snapshot',return_value={}) as inspect, \
-             patch('course_bot.status_embed',return_value={'title':'État du service'}):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()), \
+             patch('courswatch.discord_app.bot.build_status_snapshot',return_value={}) as inspect, \
+             patch('courswatch.discord_app.bot.status_embed',return_value={'title':'État du service'}):
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             command = bot.tree.get_command('status',guild=bot.scope)
@@ -93,7 +93,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_gateway_resume_refreshes_health(self):
-        with patch('course_bot.configuration',return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()):
             bot = CourseBot('fake-not-a-token')
             bot.on_ready = AsyncMock()
             await bot.on_resumed()
@@ -106,8 +106,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             response=command_response(),followup=SimpleNamespace(send=AsyncMock()))
         pages = [{'embed':{'title':'SOS · Tâche ' + str(index),'description':'Échéances connues'},'links':[]}
                  for index in range(1,7)]
-        with patch('course_bot.configuration',return_value=self.config()), \
-             patch('course_bot.current_task_pages',return_value=pages) as current:
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()), \
+             patch('courswatch.discord_app.bot.current_task_pages',return_value=pages) as current:
             bot = CourseBot('fake-not-a-token')
             await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction,'SOS')
             current.assert_called_once_with(unittest.mock.ANY,self.config(),'SOS',include_past=False)
@@ -171,8 +171,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_past_dates_require_the_explicit_command_option(self):
         interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=command_response(),
                                       followup=SimpleNamespace(send=AsyncMock()))
-        with patch('course_bot.configuration',return_value=self.config()), \
-             patch('course_bot.current_task_pages',return_value=[{'embed':{'title':'Past'},'links':[]}]) as current:
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()), \
+             patch('courswatch.discord_app.bot.current_task_pages',return_value=[{'embed':{'title':'Past'},'links':[]}]) as current:
             bot = CourseBot('fake-not-a-token')
             bot.authorize = AsyncMock(return_value=True)
             await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction,passees=True)
@@ -183,8 +183,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         import sqlite3
         interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=command_response(),
                                       followup=SimpleNamespace(send=AsyncMock()))
-        with patch('course_bot.configuration',return_value=self.config()), \
-             patch('course_bot.current_task_pages',side_effect=sqlite3.OperationalError('private path')):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()), \
+             patch('courswatch.discord_app.bot.current_task_pages',side_effect=sqlite3.OperationalError('private path')):
             bot = CourseBot('fake-not-a-token')
             bot.authorize = AsyncMock(return_value=True)
             await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction)
@@ -198,10 +198,10 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                                followup=SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=789))))
         events = [{'course': 'SOS', 'title': 'First', 'body': 'Private first', 'url': ''},
                   {'course': 'SOS', 'title': 'Second', 'body': 'Private second', 'url': ''}]
-        with patch('course_bot.configuration', return_value=self.config()), \
-             patch('course_bot.current_events', return_value=events), \
-             patch('course_bot.compact_embed', side_effect=lambda event, **kwargs: {'title': event['title']}), \
-             patch('course_bot.remember_private_card') as remember:
+        with patch('courswatch.discord_app.bot.configuration', return_value=self.config()), \
+             patch('courswatch.discord_app.bot.current_events', return_value=events), \
+             patch('courswatch.discord_app.bot.compact_embed', side_effect=lambda event, **kwargs: {'title': event['title']}), \
+             patch('courswatch.discord_app.bot.remember_private_card') as remember:
             bot = CourseBot('fake-not-a-token')
             bot.authorize = AsyncMock(return_value=True)
             bot.write_status = MagicMock()
@@ -215,7 +215,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_response_diagnostics_never_persist_arguments_or_identifiers(self):
-        with patch('course_bot.configuration', return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration', return_value=self.config()):
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             bot.record_response_timing('status', {'total_ms': 3.5, 'text': 'private text',
@@ -239,7 +239,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(**values)
 
     async def test_easter_egg_replies_without_ping_and_throttles(self):
-        with patch('course_bot.configuration',return_value=self.egg_config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.egg_config()):
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             self.assertTrue(bot.intents.guild_messages)
@@ -257,7 +257,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_easter_egg_ignores_bots_webhooks_other_channels_and_unrelated_messages(self):
-        with patch('course_bot.configuration',return_value=self.egg_config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.egg_config()):
             bot = CourseBot('fake-not-a-token')
             cases = [self.message(author=SimpleNamespace(bot=True)),self.message(webhook_id=123),
                      self.message(guild=None),self.message(channel=SimpleNamespace(id=99)),
@@ -268,7 +268,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_easter_egg_is_disabled_unless_configured(self):
-        with patch('course_bot.configuration',return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()):
             bot = CourseBot('fake-not-a-token')
             message = self.message()
             await bot.on_message(message)
@@ -276,7 +276,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_easter_egg_uses_real_discord_reply_with_supported_send_parameters(self):
-        with patch('course_bot.configuration',return_value=self.egg_config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.egg_config()):
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             message = self.message()
@@ -292,12 +292,12 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_callback_errors_log_type_without_private_event_or_exception_text(self):
-        with patch('course_bot.configuration',return_value=self.egg_config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.egg_config()):
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             output = io.StringIO()
             error = TypeError('private user text')
-            with patch('course_bot.sys.exc_info',return_value=(TypeError,error,None)), redirect_stdout(output):
+            with patch('courswatch.discord_app.bot.sys.exc_info',return_value=(TypeError,error,None)), redirect_stdout(output):
                 await bot.on_error('on_message','private event content')
             self.assertIn('TypeError',output.getvalue())
             self.assertNotIn('private',output.getvalue())
@@ -307,10 +307,10 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_easter_egg_selected_half_sends_voice_without_text(self):
         cfg = self.egg_config()
         cfg['discord']['easter_egg']['voice_probability'] = 0.5
-        with patch('course_bot.configuration',return_value=cfg), \
-             patch('course_bot.load_samples',return_value=[SimpleNamespace(id='sample')]), \
-             patch('course_bot.random.random',return_value=0.1), \
-             patch('course_bot.send_voice_message',return_value={'id':'987'}) as send:
+        with patch('courswatch.discord_app.bot.configuration',return_value=cfg), \
+             patch('courswatch.discord_app.bot.load_samples',return_value=[SimpleNamespace(id='sample')]), \
+             patch('courswatch.discord_app.bot.random.random',return_value=0.1), \
+             patch('courswatch.discord_app.bot.send_voice_message',return_value={'id':'987'}) as send:
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             message = self.message()
@@ -322,13 +322,13 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_easter_egg_voice_failure_falls_back_to_text(self):
-        from haddock_voice import VoiceMessageError
+        from courswatch.conversation.voice import VoiceMessageError
         cfg = self.egg_config()
         cfg['discord']['easter_egg']['voice_probability'] = 0.5
-        with patch('course_bot.configuration',return_value=cfg), \
-             patch('course_bot.load_samples',return_value=[SimpleNamespace(id='sample')]), \
-             patch('course_bot.random.random',return_value=0.1), \
-             patch('course_bot.send_voice_message',side_effect=VoiceMessageError('unavailable')):
+        with patch('courswatch.discord_app.bot.configuration',return_value=cfg), \
+             patch('courswatch.discord_app.bot.load_samples',return_value=[SimpleNamespace(id='sample')]), \
+             patch('courswatch.discord_app.bot.random.random',return_value=0.1), \
+             patch('courswatch.discord_app.bot.send_voice_message',side_effect=VoiceMessageError('unavailable')):
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             message = self.message()
@@ -340,10 +340,10 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_easter_egg_other_half_stays_text(self):
         cfg = self.egg_config()
         cfg['discord']['easter_egg']['voice_probability'] = 0.5
-        with patch('course_bot.configuration',return_value=cfg), \
-             patch('course_bot.load_samples',return_value=[SimpleNamespace(id='sample')]), \
-             patch('course_bot.random.random',return_value=0.9), \
-             patch('course_bot.send_voice_message') as send:
+        with patch('courswatch.discord_app.bot.configuration',return_value=cfg), \
+             patch('courswatch.discord_app.bot.load_samples',return_value=[SimpleNamespace(id='sample')]), \
+             patch('courswatch.discord_app.bot.random.random',return_value=0.9), \
+             patch('courswatch.discord_app.bot.send_voice_message') as send:
             bot = CourseBot('fake-not-a-token')
             bot.write_status = MagicMock()
             message = self.message()

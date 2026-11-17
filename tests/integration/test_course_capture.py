@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from cours_watch import State, Result, Item
-from course_capture import build_snapshot, publish_snapshot
-from course_obsidian import validate_snapshot
+from courswatch.runtime import State, Result, Item
+from courswatch.publishing.capture import build_snapshot, publish_snapshot
+from courswatch.publishing.obsidian import validate_snapshot
 
 
 class CaptureTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 import unittest
-from discord_presentation import compact_embed, embed_payload, private_details, interaction_allowed, DETAIL_CUSTOM_ID
+from courswatch.discord_app.presentation import compact_embed, embed_payload, private_details, interaction_allowed, DETAIL_CUSTOM_ID
 
 
 class PresentationTests(unittest.TestCase):

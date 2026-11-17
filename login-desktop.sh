@@ -21,4 +21,4 @@ x11vnc -display :91 -localhost -rfbport 5901 -forever -shared -passwdfile /var/l
 vnc_pid=$!
 websockify --web=/usr/share/novnc/ 127.0.0.1:6081 127.0.0.1:5901 >/dev/null 2>&1 &
 web_pid=$!
-/opt/cours-watch/venv/bin/python /opt/cours-watch/cours_watch.py login
+/opt/cours-watch/venv/bin/python -m courswatch.runtime login

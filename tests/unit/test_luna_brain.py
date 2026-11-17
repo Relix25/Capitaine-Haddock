@@ -10,7 +10,7 @@ import unittest
 import urllib.error
 from unittest.mock import Mock, patch
 
-from luna_brain import (TokenBudget, LunaBrain, BudgetExhausted, LunaError,
+from courswatch.conversation.brain import (TokenBudget, LunaBrain, BudgetExhausted, LunaError,
                         ChatMemory, ChatCadence, addressed, safe_text, read_api_key)
 from courswatch.conversation.persona import PERSONA_TEXT, DISCORD_CONTRACT, PERSONA_VERSION
 from courswatch.conversation.metrics import read_model_response
@@ -90,7 +90,7 @@ class LunaTests(unittest.TestCase):
 
     def test_commandcode_uses_its_own_endpoint_key_zdr_and_structured_decision(self):
         brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='cmd_private_synthetic_123456789')
-        with patch('luna_brain.urllib.request.urlopen',return_value=io.BytesIO(json.dumps(response()).encode())) as send:
+        with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(json.dumps(response()).encode())) as send:
             decision = brain.decide([{'speaker':'Alice','text':'PRIVATE_SENTINEL','is_bot':False}],True)
         self.assertEqual(decision['action'],'text')
         send.assert_called_once()
@@ -126,7 +126,7 @@ class LunaTests(unittest.TestCase):
 
     def test_commandcode_missing_key_never_falls_back_to_openai(self):
         transport = Mock()
-        with patch('luna_brain.read_api_key',return_value='') as read:
+        with patch('courswatch.conversation.brain.read_api_key',return_value='') as read:
             brain = LunaBrain(self.root,{'provider':'commandcode'},transport=transport)
         read.assert_called_once_with(key_name='CMD_API_KEY')
         with self.assertRaises(LunaError) as error:
@@ -144,8 +144,8 @@ class LunaTests(unittest.TestCase):
             times=iter((started+.2,started+.7))
             return read_model_response(stream,started,clock=lambda:next(times))
         brain=LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
-        with patch('luna_brain.urllib.request.urlopen',return_value=io.BytesIO(raw)) as send, \
-             patch('luna_brain.read_model_response',side_effect=measured):
+        with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(raw)) as send, \
+             patch('courswatch.conversation.brain.read_model_response',side_effect=measured):
             decision=brain.decide([],True)
         self.assertTrue(json.loads(send.call_args.args[0].data)['stream'])
         self.assertEqual(set(decision),{'action','reply','sample_id'})
@@ -160,7 +160,7 @@ class LunaTests(unittest.TestCase):
         final=dict(response(usage=(100,7)),status='incomplete',incomplete_details={'reason':'max_output_tokens'})
         raw=b'data: '+json.dumps({'type':'response.incomplete','response':final}).encode()+b'\n\n'
         brain=LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
-        with patch('luna_brain.urllib.request.urlopen',return_value=io.BytesIO(raw)):
+        with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(raw)):
             with self.assertRaises(LunaError) as error:brain.decide([],True)
         self.assertEqual(error.exception.code,'output_limit')
         self.assertEqual(error.exception.metrics['total_tokens'],107)
@@ -174,7 +174,7 @@ class LunaTests(unittest.TestCase):
         self.assertEqual(read_api_key(env,key_name='ABSENT_KEY'),'')
 
     def test_unknown_provider_is_rejected_before_accessing_keys_or_ledger(self):
-        with patch('luna_brain.read_api_key') as read:
+        with patch('courswatch.conversation.brain.read_api_key') as read:
             with self.assertRaisesRegex(ValueError,'Unsupported conversation provider'):
                 LunaBrain(self.root,{'provider':'https://untrusted.invalid'})
         read.assert_not_called()
@@ -196,7 +196,7 @@ class LunaTests(unittest.TestCase):
     def test_commandcode_refuses_zdr_without_retry_or_provider_fallback(self):
         brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
         error = urllib.error.HTTPError(brain.endpoint,422,'synthetic',{},None)
-        with patch('luna_brain.urllib.request.urlopen',side_effect=error) as send:
+        with patch('courswatch.conversation.brain.urllib.request.urlopen',side_effect=error) as send:
             with self.assertRaises(LunaError) as result:
                 brain.decide([],True)
         self.assertEqual(result.exception.code,'http_422')

@@ -11,7 +11,7 @@ from courswatch.conversation.brain import LunaBrain
 from courswatch.conversation.chat import LunaChat
 from courswatch.conversation.models import effective_settings, save_preferences
 from courswatch.discord_app.settings_ui import SettingsModal
-from course_bot import CourseBot
+from courswatch.discord_app.bot import CourseBot
 
 
 class ModelTests(unittest.IsolatedAsyncioTestCase):
@@ -103,7 +103,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         return {'discord':{'guild_id':'1','channel_id':'2','role_ids':['3'],'application_id':'4'}}
 
     async def test_command_enforces_admin_scope_and_opens_prefilled_modal(self):
-        with patch('course_bot.configuration',return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()):
             bot=CourseBot('fake')
             bot.write_status=MagicMock()
             brain=SimpleNamespace(provider='commandcode',model='tencent/hy4-flash',require_zdr=False)
@@ -132,7 +132,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_modal_dispatch_saves_both_preferences_and_reopens_with_current_values(self):
-        with patch('course_bot.configuration',return_value=self.config()), \
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()), \
              patch('courswatch.conversation.brain.read_api_key',return_value='fake'):
             bot=CourseBot('fake');bot.write_status=MagicMock()
             bot.luna=LunaChat(bot,self.root,self.settings,lambda:{})
@@ -157,7 +157,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             await bot.close()
 
     async def test_submit_rechecks_owner_role_and_admin_permission(self):
-        with patch('course_bot.configuration',return_value=self.config()):
+        with patch('courswatch.discord_app.bot.configuration',return_value=self.config()):
             bot=CourseBot('fake')
             bot.luna=SimpleNamespace(brain=SimpleNamespace(provider='commandcode',model='tencent/hy4-flash'),
                 debug_enabled=True,apply_settings=AsyncMock(),close=AsyncMock())
@@ -189,7 +189,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             if method=='GET':return [{'id':'100','name':'modele','type':1},
                 {'id':'101','name':'unrelated','type':1},{'id':'102','name':'modele','type':2}]
             return {}
-        with patch('course_bot.configuration',return_value=cfg),patch('course_bot.discord_request',side_effect=request) as send:
+        with patch('courswatch.discord_app.bot.configuration',return_value=cfg),patch('courswatch.discord_app.bot.discord_request',side_effect=request) as send:
             bot=CourseBot('fake')
             await bot.setup_hook()
             deletes=[call for call in send.call_args_list if call.kwargs.get('method')=='DELETE']

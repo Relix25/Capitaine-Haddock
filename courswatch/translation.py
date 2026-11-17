@@ -79,10 +79,16 @@ def prepare_events(events,data_dir,runner=None):
                 if runner:
                     records = runner(request)
                 else:
+                    worker_argv = cfg.get('worker_argv')
+                    if worker_argv is None:
+                        worker_argv = [cfg['worker']] if cfg.get('worker') else ['-m', 'courswatch.translation_worker']
+                    if not isinstance(worker_argv, list) or not worker_argv or not all(isinstance(arg, str) and arg for arg in worker_argv):
+                        raise ValueError('Invalid translation worker argv')
                     result = subprocess.run([cfg.get('python','/opt/cours-watch/translation-venv/bin/python'),
-                        cfg.get('worker','/opt/cours-watch/translate_worker.py')],
+                        *worker_argv],
                         input=json.dumps(request,ensure_ascii=False),text=True,capture_output=True,
                         timeout=cfg.get('timeout_seconds',180),check=True,
+                        cwd=Path(__file__).resolve().parents[1],
                         env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','OMP_NUM_THREADS':'2','OPENBLAS_NUM_THREADS':'1'})
                     records = json.loads(result.stdout)
                 for record in records:

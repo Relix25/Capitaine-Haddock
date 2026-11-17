@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, patch
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-import moodle_pdf_versions as pdf_versions
-
-
+import courswatch.documents.versions as pdf_versions
 def pdf_bytes(page_count, texts=None):
     writer = PdfWriter()
     texts = texts or [""] * page_count

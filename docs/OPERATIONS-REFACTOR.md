@@ -4,11 +4,11 @@ Cette procédure prépare les lots de code, leur validation et leur remplacement
 
 ## Source et unités de référence
 
-Le dépôt Git Haddock est la source des changements. La copie `veille-cours` ne doit pas servir de source d'un nouveau lot ; elle reste conservée tant que ses appelants externes ne sont pas inventoriés. Les chemins CLI historiques sont maintenus.
+Le dépôt Git Haddock est la source des changements. La copie `veille-cours` ne doit pas servir de source d'un nouveau lot ; elle reste conservée tant que ses appelants externes ne sont pas inventoriés. Les anciens chemins CLI Python racine sont retirés ; migrer les appelants externes vers `main.py` ou les points d’entrée `python -m courswatch...` et `python -m ops...` avant installation.
 
 `systemd/` est l'unique copie des unités et de leurs drop-ins. Les copies à la racine ont été retirées avec leurs installateurs obsolètes. Les deux anciennes variantes de service avaient intégré le droit d'écriture du drop-in dans le fichier principal ; conserver ensemble la base et son drop-in sous `systemd/`. Avant toute évolution, comparer les propriétés effectives sur l'hôte : identités, chemins autorisés, conditions d'activation, timers et permissions. Les restrictions ne doivent pas être élargies.
 
-Les outils `install_translation_models.py`, `install_reminders.py` et `verify_bot_live.py` sont désormais importables sans déclencher leur opération. Leur lancement direct conserve leur fonction historique ; le dernier appelle Discord et écrit une preuve. Ils ne font pas partie des tests locaux automatiques.
+Les outils `ops.maintenance.install_translation_models`, `ops.maintenance.install_reminders` et `ops.probes.verify_bot_live` sont désormais importables sans déclencher leur opération. Leur lancement direct conserve leur fonction historique ; le dernier appelle Discord et écrit une preuve. Ils ne font pas partie des tests locaux automatiques.
 
 ## Construire et vérifier un lot local
 
@@ -42,7 +42,7 @@ Le manifeste doit contenir exactement `en_fr` et `ro_en`, avec pour chacun `vers
 ## Installation et retour arrière
 
 1. Relever les SHA actifs et unités effectives ; vérifier l'absence de modifications concurrentes. Construire un lot revu depuis Git et le vérifier.
-2. Tester le lot complet dans un staging Linux avec les versions des trois environnements, sans accès aux secrets ni aux plateformes. Valider les imports historiques et nouveaux, les tests, les unités et les drop-ins.
+2. Tester le lot complet dans un staging Linux avec les versions des trois environnements, sans accès aux secrets ni aux plateformes. Valider les imports canoniques, les nouveaux argv, les tests, les unités et les drop-ins.
 3. Préparer une sauvegarde unique du lot actif et de ses métadonnées, puis une liste précise des fichiers à remplacer. Utiliser une sauvegarde SQLite cohérente avec WAL pour toute évolution de schéma ; ne pas copier aveuglément les seuls fichiers `.db`.
 4. Lors du déploiement demandé, coordonner les processus concernés et remplacer seulement les fichiers prévus par le lot revu. Ne jamais synchroniser globalement vers `/etc/cours-watch` ou `/var/lib/cours-watch`. Le nettoyage de sources Git ne demande pas de supprimer les copies historiques présentes sur le VPS.
 5. En cas d'échec, restaurer ensemble l'ancien code et les unités/drop-ins sauvegardés. Vérifier le PID courant, l'état prêt, les commandes et les fonctions concernées. Publier ensuite le résultat et les limites sur GitHub selon [AGENTS.md](../AGENTS.md).

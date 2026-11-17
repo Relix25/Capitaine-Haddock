@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from cours_watch import Item, Result, State, moodle_pdf_items
+from courswatch.runtime import Item, Result, State, moodle_pdf_items
 
 
 class MoodlePdfCollectionTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class MoodlePdfCollectionTests(unittest.TestCase):
         fingerprint = "SHA256 " + "a" * 64
         self.seed(fingerprint)
         fetched = {"sha256": "a" * 64}
-        with patch("moodle_pdf_versions.fetch_pdf", new=AsyncMock(return_value=fetched)):
+        with patch("courswatch.documents.versions.fetch_pdf", new=AsyncMock(return_value=fetched)):
             items = self.call()
         self.assertEqual(self.item_by_suffix(items, ":document").body, fingerprint)
         self.assertEqual(self.state.ingest(Result("moodle:AAIT", "AAIT", "ok", [*items])), [])
@@ -51,7 +51,7 @@ class MoodlePdfCollectionTests(unittest.TestCase):
             Item(self.row["key"], self.row["title"], "", self.row["url"]),
         ]))
         fetched = {"sha256": "b" * 64}
-        with patch("moodle_pdf_versions.fetch_pdf", new=AsyncMock(return_value=fetched)):
+        with patch("courswatch.documents.versions.fetch_pdf", new=AsyncMock(return_value=fetched)):
             items = self.call()
         document = self.item_by_suffix(items, ":document")
         self.assertEqual(document.key, "module-20524:document")
@@ -63,7 +63,7 @@ class MoodlePdfCollectionTests(unittest.TestCase):
         old_fingerprint = "SHA256 " + "c" * 64
         self.seed(old_fingerprint)
         fetched = {"sha256": "d" * 64}
-        with patch("moodle_pdf_versions.fetch_pdf", new=AsyncMock(return_value=fetched)):
+        with patch("courswatch.documents.versions.fetch_pdf", new=AsyncMock(return_value=fetched)):
             items = self.call()
         document = self.item_by_suffix(items, ":document")
         self.assertEqual(document.title, self.row["title"])
@@ -77,8 +77,8 @@ class MoodlePdfCollectionTests(unittest.TestCase):
     def test_archive_failure_keeps_verified_hash_and_adds_status_item(self):
         self.seed("SHA256 " + "e" * 64)
         fetched = {"sha256": "f" * 64}
-        with patch("moodle_pdf_versions.fetch_pdf", new=AsyncMock(return_value=fetched)), \
-                patch("moodle_pdf_versions.archive_pdf", side_effect=RuntimeError("archive unavailable")):
+        with patch("courswatch.documents.versions.fetch_pdf", new=AsyncMock(return_value=fetched)), \
+                patch("courswatch.documents.versions.archive_pdf", side_effect=RuntimeError("archive unavailable")):
             items = self.call(pdf_store="/spool")
         document = self.item_by_suffix(items, ":document")
         status = self.item_by_suffix(items, ":document-status")
@@ -94,8 +94,8 @@ class MoodlePdfCollectionTests(unittest.TestCase):
         self.assertIn("SHA256 " + "f" * 64, stored[0])
 
     def test_download_failure_has_a_known_status_item_and_no_hash(self):
-        with patch("moodle_pdf_versions.fetch_pdf", new=AsyncMock(side_effect=RuntimeError("download failed"))), \
-                patch("moodle_pdf_versions.archive_pdf") as archive:
+        with patch("courswatch.documents.versions.fetch_pdf", new=AsyncMock(side_effect=RuntimeError("download failed"))), \
+                patch("courswatch.documents.versions.archive_pdf") as archive:
             items = self.call(pdf_store="/spool")
         status = self.item_by_suffix(items, ":document-status")
         self.assertEqual(status.key, "module-20524:document-status")
@@ -114,8 +114,8 @@ class MoodlePdfCollectionTests(unittest.TestCase):
             store = Path(directory)
             (store / 'AAIT').mkdir()
             mappings = []
-            with patch("moodle_pdf_versions.fetch_pdf", side_effect=fetch), \
-                    patch("moodle_pdf_versions.archive_pdf") as archive:
+            with patch("courswatch.documents.versions.fetch_pdf", side_effect=fetch), \
+                    patch("courswatch.documents.versions.archive_pdf") as archive:
                 for order in (urls, list(reversed(urls))):
                     archive.reset_mock()
                     items = self.call(pdf_store=store, urls=order)
@@ -155,9 +155,9 @@ class MoodlePdfCollectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = Path(directory)
             (store / 'AAIT').mkdir()
-            with patch('moodle_pdf_versions.fetch_pdf', side_effect=fetch), \
+            with patch('courswatch.documents.versions.fetch_pdf', side_effect=fetch), \
                  patch('courswatch.documents.identities.attachment_archive_keys', side_effect=bind), \
-                 patch('moodle_pdf_versions.archive_pdf', side_effect=archive):
+                 patch('courswatch.documents.versions.archive_pdf', side_effect=archive):
                 items = self.call(pdf_store=store, urls=urls)
             self.assertEqual(archived, list(bodies.values()))
             self.assertEqual(len([item for item in items if item.key.endswith(':document')]), 2)
