@@ -41,7 +41,7 @@ PROFILES = {
         "test_apply_course_seed_pc",
     ),
     "regression": (
-        "test_pipeline", "test_schema", "test_compatibility", "test_refresh",
+        "test_pipeline", "test_schema", "test_compatibility", "test_refresh", "tests.unit.test_responses",
     ),
     "operations": (
         "test_operations", "tests.operations.test_channel_validation",

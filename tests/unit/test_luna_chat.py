@@ -1,7 +1,10 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,7 +32,32 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat.pending_direct = chat.pending_ambient = chat.task = None
         chat.closed,chat.sequence = False,0
         chat.retry_after = 0
+        chat.clock,chat.sleep = time.monotonic,asyncio.sleep
         return chat
+
+    def fast_clock(self,chat,on_sleep=None):
+        clock,delays = [100.0],[]
+        async def sleep(delay):
+            delays.append(delay)
+            if on_sleep is not None:
+                on_sleep(delay)
+            clock[0] += delay
+        chat.clock = lambda:clock[0]
+        chat.sleep = sleep
+        chat.memory.clock = chat.cadence.clock = chat.clock
+        return clock,delays
+
+    def typing_context(self,message):
+        state = SimpleNamespace(active=False)
+        async def enter():
+            state.active = True
+        async def leave(*args):
+            state.active = False
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(side_effect=enter)
+        manager.__aexit__ = AsyncMock(side_effect=leave)
+        message.channel.typing = MagicMock(return_value=manager)
+        return manager,state
 
     async def test_direct_reply_and_coalescing_preserve_context_without_ping(self):
         chat = self.chat()
@@ -46,6 +74,139 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(next_message.reply.await_args.kwargs['allowed_mentions'].everyone)
         self.assertTrue(chat.cadence.followup(4))
         await chat.close()
+
+    async def test_message_during_short_direct_debounce_is_still_coalesced(self):
+        chat = self.chat()
+        first = self.message()
+        second = self.message(id=124,content='Haddock, une seconde précision.')
+        inserted = []
+        def interleave(delay):
+            if not inserted:
+                inserted.append(True)
+                chat.accept(second,False)
+        _,delays = self.fast_clock(chat,interleave)
+        chat.accept(first,False)
+        await chat.task
+        self.assertEqual(delays,[0.15])
+        first.reply.assert_not_awaited()
+        second.reply.assert_awaited_once()
+        chat.brain.decide.assert_called_once()
+        self.assertEqual(len(chat.brain.decide.call_args.args[0]),2)
+        await chat.close()
+
+    async def test_chat_timings_separate_queue_model_and_delivery_without_private_data(self):
+        chat = self.chat()
+        clock,delays = self.fast_clock(chat)
+        private = 'SENTINEL_PRIVATE_CONVERSATION_NEVER_PERSIST'
+        message = self.message(id=123456789012345678,content='Haddock, '+private,
+            created_at=datetime.now(timezone.utc)-timedelta(milliseconds=50),
+            author=SimpleNamespace(id=987654321012345678,display_name='PRIVATE_SPEAKER'))
+        def decide(*args):
+            clock[0] += 0.25
+            return {'action':'text','reply':private,'sample_id':'none'}
+        async def reply(*args,**kwargs):
+            clock[0] += 0.05
+            return SimpleNamespace(id=456)
+        chat.brain.decide.side_effect = decide
+        message.reply.side_effect = reply
+        chat.accept(message,False)
+        await chat.task
+        timing = chat.bot.write_status.call_args.kwargs['last_chat_timing']
+        self.assertEqual(delays,[0.15])
+        self.assertEqual({key:timing[key] for key in ('queue_ms','model_ms','delivery_ms','total_ms')},
+                         {'queue_ms':150.0,'model_ms':250.0,'delivery_ms':50.0,'total_ms':450.0})
+        self.assertGreaterEqual(timing['gateway_ms'],0)
+        serialized = json.dumps(timing)
+        for value in (private,'PRIVATE_SPEAKER','123456789012345678','987654321012345678'):
+            self.assertNotIn(value,serialized)
+        self.assertEqual(set(timing),{'mode','queue_ms','model_ms','delivery_ms','total_ms','gateway_ms','checked_utc'})
+        await chat.close()
+
+    async def test_typing_spans_direct_facts_and_model_but_stops_before_reply(self):
+        chat = self.chat()
+        self.fast_clock(chat)
+        message = self.message()
+        manager,state = self.typing_context(message)
+        async def facts():
+            self.assertTrue(state.active)
+            return 'synthetic facts'
+        def decide(*args):
+            self.assertTrue(state.active)
+            return {'action':'text','reply':'Réponse synthétique.','sample_id':'none'}
+        async def reply(*args,**kwargs):
+            self.assertFalse(state.active)
+            return SimpleNamespace(id=456)
+        chat.facts = facts
+        chat.brain.decide.side_effect = decide
+        message.reply.side_effect = reply
+        chat.accept(message,False)
+        await chat.task
+        manager.__aenter__.assert_awaited_once()
+        manager.__aexit__.assert_awaited_once()
+        chat.brain.decide.assert_called_once()
+        message.reply.assert_awaited_once()
+        await chat.close()
+
+    async def test_ambient_keeps_four_second_debounce_and_never_types(self):
+        chat = self.chat()
+        _,delays = self.fast_clock(chat)
+        chat.brain.decide.return_value = {'action':'ignore','reply':'','sample_id':'none'}
+        message = self.message(content='Le cours commence à neuf heures demain.')
+        message.channel.typing = MagicMock(side_effect=AssertionError('ambient typing'))
+        chat.accept(message,False)
+        await chat.task
+        self.assertEqual(delays,[4])
+        message.channel.typing.assert_not_called()
+        message.reply.assert_not_awaited()
+        await chat.close()
+
+    async def test_typing_is_cleaned_up_before_a_model_error_fallback(self):
+        chat = self.chat()
+        self.fast_clock(chat)
+        message = self.message()
+        manager,state = self.typing_context(message)
+        chat.brain.decide.side_effect = LunaError('http_429')
+        chat.accept(message,False)
+        await chat.task
+        manager.__aexit__.assert_awaited_once()
+        self.assertIs(manager.__aexit__.await_args.args[0],LunaError)
+        self.assertFalse(state.active)
+        self.assertEqual(message.reply.await_args.args[0],OFFLINE_REPLY)
+        chat.brain.decide.assert_called_once()
+        await chat.close()
+
+    async def test_unavailable_typing_does_not_prevent_a_direct_reply(self):
+        chat = self.chat()
+        self.fast_clock(chat)
+        message = self.message()
+        manager,_ = self.typing_context(message)
+        manager.__aenter__.side_effect = OSError('private network detail')
+        chat.accept(message,False)
+        await chat.task
+        chat.brain.decide.assert_called_once()
+        message.reply.assert_awaited_once()
+        manager.__aexit__.assert_not_awaited()
+        self.assertNotIn('private network detail',str(chat.bot.write_status.call_args_list))
+        await chat.close()
+
+    async def test_close_cleans_up_active_typing_without_calling_the_model(self):
+        chat = self.chat()
+        self.fast_clock(chat)
+        message = self.message()
+        manager,state = self.typing_context(message)
+        facts_started = asyncio.Event()
+        async def facts():
+            facts_started.set()
+            await asyncio.Event().wait()
+        chat.facts = facts
+        chat.accept(message,False)
+        await asyncio.wait_for(facts_started.wait(),timeout=1)
+        await chat.close()
+        manager.__aexit__.assert_awaited_once()
+        self.assertIs(manager.__aexit__.await_args.args[0],asyncio.CancelledError)
+        self.assertFalse(state.active)
+        chat.brain.decide.assert_not_called()
+        message.reply.assert_not_awaited()
 
     async def test_quota_returns_static_phrase_and_commands_still_exist(self):
         chat = self.chat()

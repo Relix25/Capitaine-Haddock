@@ -24,6 +24,7 @@ from courswatch.conversation.easter_egg import HaddockEasterEgg, triggered
 from courswatch.conversation.voice import load_samples, choose_sample, send_voice_message, VoiceMessageError
 from courswatch.conversation.chat import LunaChat
 from courswatch.discord_app.presentation import compact_embed, interaction_allowed, private_details, DETAIL_CUSTOM_ID
+from courswatch.discord_app.responses import prepare_private, send_private
 
 DATA = Path(os.environ.get('COURS_WATCH_DATA','/var/lib/cours-watch'))
 CONFIG = Path(os.environ.get('COURS_WATCH_CONFIG','/etc/cours-watch/config.json'))
@@ -166,6 +167,18 @@ class CourseBot(discord.Client):
         previous.update(status=status,finished_utc=stamp(),**extra)
         self.write_status(last_manual_scan=previous)
 
+    def record_response_timing(self, command, timing):
+        # Only technical durations: no interaction IDs, users, arguments or text.
+        if command not in ('a-faire', 'cours', 'status', 'actualiser'):
+            return
+        fields = ('gateway_ms', 'prepare_ms', 'ack_ms', 'send_ms', 'total_ms',
+                  'deferred', 'initial_response')
+        metadata = {'command': command, **{key: timing[key] for key in fields if key in timing}}
+        try:
+            self.write_status(last_command_timing=metadata)
+        except OSError:
+            pass  # A diagnostic write must not turn a delivered reply into a failure.
+
     async def authorize(self, interaction):
         cfg = configuration()['discord']
         roles = [role.id for role in getattr(interaction.user,'roles',[])]
@@ -260,13 +273,18 @@ class CourseBot(discord.Client):
             self.write_status(last_easter_egg={'sent_utc':stamp(),'reply_id':str(reply.id),'format':'text'},last_easter_egg_error=None)
 
     async def send_current(self, interaction, course='tous'):
-        events = await asyncio.to_thread(current_events, DATA, configuration(), course)
+        events, timing = await prepare_private(interaction, current_events, DATA, configuration(), course)
         if not events:
-            await interaction.followup.send('Aucun projet à venir confirmé pour cette sélection.',ephemeral=True)
+            await send_private(interaction, 'Aucun projet à venir confirmé pour cette sélection.', timing=timing)
+            self.record_response_timing('cours', timing)
             return
-        for event in events:
-            message = await interaction.followup.send(embed=discord.Embed.from_dict(compact_embed(event,interactive=True)),
-                         view=DetailsView(self),ephemeral=True,wait=True,allowed_mentions=discord.AllowedMentions.none())
+        for index, event in enumerate(events):
+            message = await send_private(interaction, embed=discord.Embed.from_dict(compact_embed(event,interactive=True)),
+                                         view=DetailsView(self), fetch_message=True,
+                                         timing=timing if index == 0 else None)
+            if index == 0:
+                name = getattr(getattr(interaction, 'command', None), 'name', 'cours')
+                self.record_response_timing(name, timing)
             await asyncio.to_thread(remember_private_card,DATA,message.id,interaction.user.id,event)
 
     def register_commands(self):
@@ -276,24 +294,24 @@ class CourseBot(discord.Client):
         async def a_faire(interaction:discord.Interaction,cours:str='tous',passees:bool=False):
             if not await self.authorize(interaction):
                 return
-            await interaction.response.defer(ephemeral=True,thinking=True)
             try:
-                pages = await asyncio.to_thread(current_task_pages,DATA,configuration(),cours,include_past=passees)
+                pages, timing = await prepare_private(interaction, current_task_pages, DATA, configuration(),
+                                                      cours, include_past=passees)
                 view = TaskListView(self,interaction.user.id,pages)
             except (OSError,ValueError,sqlite3.Error):
-                await interaction.followup.send('La liste est indisponible. /status indique le dernier état connu.',ephemeral=True)
+                await send_private(interaction, 'La liste est indisponible. /status indique le dernier état connu.')
                 return
-            await interaction.followup.send(**view.message_payload(),ephemeral=True)
+            await send_private(interaction, **view.message_payload(), timing=timing)
+            self.record_response_timing('a-faire', timing)
 
         @self.tree.command(name='status',description='Vérifier la santé, le prochain point et les annonces déjà envoyées.',guild=self.scope)
         async def status(interaction:discord.Interaction):
             if not await self.authorize(interaction):
                 return
-            await interaction.response.defer(ephemeral=True,thinking=True)
-            snapshot = await asyncio.to_thread(build_status_snapshot,DATA,configuration(),
-                self.is_ready(),self.latency,self.refresh_lock.locked())
-            await interaction.followup.send(embed=discord.Embed.from_dict(status_embed(snapshot)),ephemeral=True,
-                                            allowed_mentions=discord.AllowedMentions.none())
+            snapshot, timing = await prepare_private(interaction, build_status_snapshot, DATA, configuration(),
+                                                      self.is_ready(), self.latency, self.refresh_lock.locked())
+            await send_private(interaction, embed=discord.Embed.from_dict(status_embed(snapshot)), timing=timing)
+            self.record_response_timing('status', timing)
             self.write_status(last_status_view=stamp())
 
         @self.tree.command(name='cours',description='Voir les projets et échéances, uniquement pour toi.',guild=self.scope)
@@ -302,7 +320,6 @@ class CourseBot(discord.Client):
         async def cours(interaction:discord.Interaction,cours:str='tous'):
             if not await self.authorize(interaction):
                 return
-            await interaction.response.defer(ephemeral=True,thinking=True)
             await self.send_current(interaction,cours)
 
         @self.tree.command(name='actualiser',description='Relire Moodle et Teams puis afficher les projets en privé.',guild=self.scope)

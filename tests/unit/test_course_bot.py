@@ -15,6 +15,17 @@ from cours_watch import State
 from course_bot import CourseBot, DetailsView, TaskListView
 
 
+def command_response():
+    state = {'done': False}
+    async def send(*args, **kwargs):
+        state['done'] = True
+        return SimpleNamespace(resource=SimpleNamespace(id=123), message_id=123)
+    async def defer(**kwargs):
+        state['done'] = True
+    return SimpleNamespace(is_done=lambda: state['done'], send_message=AsyncMock(side_effect=send),
+                           defer=AsyncMock(side_effect=defer))
+
+
 class BotTests(unittest.IsolatedAsyncioTestCase):
     def config(self):
         return {'discord':{'guild_id':'1376984512046563519','channel_id':'1570209088929800282',
@@ -66,7 +77,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_response_is_private_and_does_not_trigger_a_collection(self):
         interaction = SimpleNamespace(guild_id=1376984512046563519,channel_id=1570209088929800282,
             user=SimpleNamespace(roles=[SimpleNamespace(id=1570209160744673411)]),
-            response=SimpleNamespace(defer=AsyncMock()),followup=SimpleNamespace(send=AsyncMock()))
+            response=command_response(),followup=SimpleNamespace(send=AsyncMock()))
         with patch('course_bot.configuration',return_value=self.config()), \
              patch('course_bot.build_status_snapshot',return_value={}) as inspect, \
              patch('course_bot.status_embed',return_value={'title':'État du service'}):
@@ -74,8 +85,9 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             bot.write_status = MagicMock()
             command = bot.tree.get_command('status',guild=bot.scope)
             await command.callback(interaction)
-            self.assertTrue(interaction.response.defer.await_args.kwargs['ephemeral'])
-            self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
+            interaction.response.defer.assert_not_awaited()
+            self.assertTrue(interaction.response.send_message.await_args.kwargs['ephemeral'])
+            interaction.followup.send.assert_not_awaited()
             inspect.assert_called_once()
             self.assertIsNone(bot.child)
             await bot.close()
@@ -91,7 +103,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_task_command_is_private_filtered_and_does_not_collect_or_ping(self):
         interaction = SimpleNamespace(guild_id=1376984512046563519,channel_id=1570209088929800282,
             user=SimpleNamespace(id=456,roles=[SimpleNamespace(id=1570209160744673411)]),
-            response=SimpleNamespace(defer=AsyncMock()),followup=SimpleNamespace(send=AsyncMock()))
+            response=command_response(),followup=SimpleNamespace(send=AsyncMock()))
         pages = [{'embed':{'title':'SOS · Tâche ' + str(index),'description':'Échéances connues'},'links':[]}
                  for index in range(1,7)]
         with patch('course_bot.configuration',return_value=self.config()), \
@@ -99,9 +111,10 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             bot = CourseBot('fake-not-a-token')
             await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction,'SOS')
             current.assert_called_once_with(unittest.mock.ANY,self.config(),'SOS',include_past=False)
-            self.assertTrue(interaction.response.defer.await_args.kwargs['ephemeral'])
-            sent = interaction.followup.send.await_args.kwargs
-            interaction.followup.send.assert_awaited_once()
+            interaction.response.defer.assert_not_awaited()
+            sent = interaction.response.send_message.await_args.kwargs
+            interaction.response.send_message.assert_awaited_once()
+            interaction.followup.send.assert_not_awaited()
             self.assertEqual(len(sent['embeds']),3)
             self.assertEqual([embed.title for embed in sent['embeds']],['SOS · Tâche 1','SOS · Tâche 2','SOS · Tâche 3'])
             self.assertTrue(sent['ephemeral'])
@@ -156,7 +169,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         view.stop()
 
     async def test_past_dates_require_the_explicit_command_option(self):
-        interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=SimpleNamespace(defer=AsyncMock()),
+        interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=command_response(),
                                       followup=SimpleNamespace(send=AsyncMock()))
         with patch('course_bot.configuration',return_value=self.config()), \
              patch('course_bot.current_task_pages',return_value=[{'embed':{'title':'Past'},'links':[]}]) as current:
@@ -168,15 +181,47 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_task_storage_error_returns_a_private_explanation(self):
         import sqlite3
-        interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=SimpleNamespace(defer=AsyncMock()),
+        interaction = SimpleNamespace(user=SimpleNamespace(id=456),response=command_response(),
                                       followup=SimpleNamespace(send=AsyncMock()))
         with patch('course_bot.configuration',return_value=self.config()), \
              patch('course_bot.current_task_pages',side_effect=sqlite3.OperationalError('private path')):
             bot = CourseBot('fake-not-a-token')
             bot.authorize = AsyncMock(return_value=True)
             await bot.tree.get_command('a-faire',guild=bot.scope).callback(interaction)
-            self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
-            self.assertNotIn('private path',interaction.followup.send.await_args.args[0])
+            self.assertTrue(interaction.response.send_message.await_args.kwargs['ephemeral'])
+            self.assertNotIn('private path',interaction.response.send_message.await_args.args[0])
+            await bot.close()
+
+
+    async def test_first_course_card_is_immediate_and_snapshots_stay_bound_to_owner(self):
+        intr = SimpleNamespace(user=SimpleNamespace(id=456), response=command_response(),
+                               followup=SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=789))))
+        events = [{'course': 'SOS', 'title': 'First', 'body': 'Private first', 'url': ''},
+                  {'course': 'SOS', 'title': 'Second', 'body': 'Private second', 'url': ''}]
+        with patch('course_bot.configuration', return_value=self.config()), \
+             patch('course_bot.current_events', return_value=events), \
+             patch('course_bot.compact_embed', side_effect=lambda event, **kwargs: {'title': event['title']}), \
+             patch('course_bot.remember_private_card') as remember:
+            bot = CourseBot('fake-not-a-token')
+            bot.authorize = AsyncMock(return_value=True)
+            bot.write_status = MagicMock()
+            await bot.tree.get_command('cours', guild=bot.scope).callback(intr)
+            intr.response.defer.assert_not_awaited()
+            self.assertEqual(intr.response.send_message.await_count, 1)
+            self.assertEqual(intr.followup.send.await_count, 1)
+            self.assertTrue(intr.response.send_message.await_args.kwargs['ephemeral'])
+            self.assertTrue(intr.followup.send.await_args.kwargs['ephemeral'])
+            self.assertEqual([call.args[1:3] for call in remember.call_args_list], [(123, 456), (789, 456)])
+            await bot.close()
+
+    async def test_response_diagnostics_never_persist_arguments_or_identifiers(self):
+        with patch('course_bot.configuration', return_value=self.config()):
+            bot = CourseBot('fake-not-a-token')
+            bot.write_status = MagicMock()
+            bot.record_response_timing('status', {'total_ms': 3.5, 'text': 'private text',
+                                                  'user_id': 456, 'interaction_id': 123})
+            self.assertEqual(bot.write_status.call_args.kwargs,
+                             {'last_command_timing': {'command': 'status', 'total_ms': 3.5}})
             await bot.close()
 
     def egg_config(self):

@@ -1,9 +1,12 @@
 """One bounded asynchronous conversation worker for the configured private channel."""
 import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import json
 import random
 import re
 import sqlite3
+import sys
 import time
 
 import discord
@@ -27,6 +30,7 @@ class LunaChat:
         self.closed = False
         self.sequence = 0
         self.retry_after = 0
+        self.clock, self.sleep = time.monotonic, asyncio.sleep
 
     def accept(self,message,mentioned):
         # Caller already enforces guild, channel, role, human and non-webhook checks.
@@ -44,7 +48,10 @@ class LunaChat:
         if not direct and (len(content) < 18 or not self.cadence.ambient_allowed()):
             return
         self.sequence += 1
-        item = (self.sequence,message,direct,time.monotonic())
+        created = getattr(message,'created_at',None)
+        gateway = (max(0,(datetime.now(timezone.utc)-created).total_seconds()*1000)
+                   if isinstance(created,datetime) and created.tzinfo is not None else None)
+        item = (self.sequence,message,direct,self.clock(),gateway)
         if direct:
             self.pending_direct = item
         else:
@@ -65,15 +72,51 @@ class LunaChat:
         except (OSError,ValueError,KeyError,sqlite3.Error):
             return 'Cache des cours indisponible. Utiliser /cours ou /actualiser ; ne pas inventer de date.'
 
+    @asynccontextmanager
+    async def typing(self,message,direct):
+        """A best-effort hint must not delay or replace an actual reply."""
+        factory = getattr(getattr(message,'channel',None),'typing',None)
+        manager = None
+        entered = False
+        async def enter():
+            nonlocal entered
+            await manager.__aenter__()
+            entered = True
+        try:
+            if direct and callable(factory):
+                try:
+                    manager = factory()
+                    await asyncio.wait_for(enter(),timeout=0.25)
+                except (TimeoutError,OSError,discord.HTTPException):
+                    pass
+            yield
+        finally:
+            if entered:
+                try:
+                    await manager.__aexit__(*sys.exc_info())
+                except (OSError,discord.HTTPException):
+                    pass
+
+    def record_timing(self,timing,received,gateway):
+        record = {**timing,'total_ms':round(max(0,self.clock()-received)*1000,1),
+                  'checked_utc':stamp()}
+        if gateway is not None:
+            record['gateway_ms'] = round(gateway,1)
+        try:
+            self.bot.write_status(last_chat_timing=record)
+        except OSError:
+            # Diagnostics must not turn a delivered reply into a callback failure.
+            pass
+
     async def run(self):
         try:
             while not self.closed and (self.pending_direct or self.pending_ambient):
                 item = self.pending_direct or self.pending_ambient
-                sequence,message,direct,received = item
-                delay = max((0.6 if direct else 4) - (time.monotonic()-received),
+                sequence,message,direct,received,gateway = item
+                delay = max((0.15 if direct else 4) - (self.clock()-received),
                             2-(self.cadence.clock()-self.cadence.last_sent),0)
                 if delay:
-                    await asyncio.sleep(delay)
+                    await self.sleep(delay)
                 # Coalesce rapid messages, prioritising the latest direct request.
                 if item is not (self.pending_direct or self.pending_ambient):
                     continue
@@ -84,33 +127,50 @@ class LunaChat:
                     if not self.cadence.ambient_allowed():
                         continue
                 self.cadence.last_analysis = self.cadence.clock()
-                if time.monotonic() < self.retry_after:
-                    if direct:
-                        await self.deliver(message,{'action':'text','reply':OFFLINE_REPLY,'sample_id':'none'},True,False)
-                    continue
+                timing = {'mode':'direct' if direct else 'ambient',
+                          'queue_ms':round(max(0,self.clock()-received)*1000,1),
+                          'model_ms':0.0,'delivery_ms':0.0}
+                async def deliver(decision,is_direct,conversation=True):
+                    started = self.clock()
+                    try:
+                        await self.deliver(message,decision,is_direct,conversation)
+                    finally:
+                        timing['delivery_ms'] += round(max(0,self.clock()-started)*1000,1)
                 try:
-                    facts = await self.facts() if direct else ''
-                    decision = await asyncio.to_thread(self.brain.decide,self.memory.context(),direct,
-                                                       self.bot.voice_samples,facts)
-                except BudgetExhausted:
-                    if direct or self.brain.budget.first_notice():
-                        await self.deliver(message,{'action':'text','reply':BUDGET_REPLY,'sample_id':'none'},direct,False)
-                    continue
-                except LunaError as error:
-                    response_problem = error.code in RESPONSE_ERRORS
-                    if not response_problem:
-                        self.retry_after = time.monotonic()+60
-                    self.bot.write_status(last_luna_error={'code':error.code,'checked_utc':stamp(),
-                        'scope':'message' if response_problem else 'service'})
-                    if direct:
-                        fallback = (REFUSAL_REPLY if error.code == 'model_refusal' else REPHRASE_REPLY) if response_problem else OFFLINE_REPLY
-                        await self.deliver(message,{'action':'text','reply':fallback,'sample_id':'none'},True,False)
-                    continue
-                # A direct message arriving during ambient analysis takes precedence over the joke.
-                if not direct and self.pending_direct:
-                    continue
-                if decision['action'] != 'ignore':
-                    await self.deliver(message,decision,direct)
+                    if self.clock() < self.retry_after:
+                        if direct:
+                            await deliver({'action':'text','reply':OFFLINE_REPLY,'sample_id':'none'},True,False)
+                        continue
+                    try:
+                        async with self.typing(message,direct):
+                            facts = await self.facts() if direct else ''
+                            started = self.clock()
+                            try:
+                                decision = await asyncio.to_thread(self.brain.decide,self.memory.context(),direct,
+                                                                   self.bot.voice_samples,facts)
+                            finally:
+                                timing['model_ms'] = round(max(0,self.clock()-started)*1000,1)
+                    except BudgetExhausted:
+                        if direct or self.brain.budget.first_notice():
+                            await deliver({'action':'text','reply':BUDGET_REPLY,'sample_id':'none'},direct,False)
+                        continue
+                    except LunaError as error:
+                        response_problem = error.code in RESPONSE_ERRORS
+                        if not response_problem:
+                            self.retry_after = self.clock()+60
+                        self.bot.write_status(last_luna_error={'code':error.code,'checked_utc':stamp(),
+                            'scope':'message' if response_problem else 'service'})
+                        if direct:
+                            fallback = (REFUSAL_REPLY if error.code == 'model_refusal' else REPHRASE_REPLY) if response_problem else OFFLINE_REPLY
+                            await deliver({'action':'text','reply':fallback,'sample_id':'none'},True,False)
+                        continue
+                    # A direct message arriving during ambient analysis takes precedence over the joke.
+                    if not direct and self.pending_direct:
+                        continue
+                    if decision['action'] != 'ignore':
+                        await deliver(decision,direct)
+                finally:
+                    self.record_timing(timing,received,gateway)
         except asyncio.CancelledError:
             raise
         except Exception as error:
