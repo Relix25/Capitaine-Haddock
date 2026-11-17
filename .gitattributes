@@ -6,3 +6,4 @@
 *.path text eol=lf
 *.conf text eol=lf
 courswatch/conversation/prompt-haddock.txt -text
+docs/history/Operations-historique-2026-11-12.md -text

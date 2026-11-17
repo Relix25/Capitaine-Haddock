@@ -1,48 +1,52 @@
 # Capitaine Haddock
 
-Bot Discord personnel pour les cours UPB et les activités ESN Bucarest, exécuté sur un VPS. Il fonctionne lorsque le PC est éteint.
+Bot Discord personnel pour les cours UPB et les activités ESN Bucarest, exécuté sur un VPS. Il reste disponible lorsque le PC est éteint.
 
-## Commandes
+## Utilisation
 
 | Commande | Fonction |
 |---|---|
-| `/a-faire [cours] [passees]` | Prochaine échéance en premier. Trois embeds distincts par message privé, une tâche par embed, boutons de navigation et liens numérotés. Dates passées masquées par défaut. |
+| `/a-faire [cours] [passees]` | Échéances à venir, de la plus proche à la plus lointaine ; trois cartes par message privé, pagination et liens numérotés. |
 | `/cours [cours]` | Projets et échéances à venir, avec détails privés. |
 | `/actualiser` | Relire Moodle et Teams, publier les changements puis afficher un point privé. |
-| `/status` | Santé du bot et des sources, prochains passages, rappels et annonces acceptées par Discord, quota Luna et veille ESN. |
+| `/status` | Santé des sources et du bot, prochains passages, annonces acceptées par Discord et consommation du modèle. |
 
-Les commandes exigent le rôle UPB dans le salon configuré. Les réponses de commandes sont éphémères et ne pingent personne. `/a-faire` commence par la date à venir la plus proche du moment de la commande. L’option `passees: vrai` ajoute les dates antérieures après les tâches à venir, de la plus proche à la plus ancienne ; elles portent « rendu personnel à vérifier ». Le bot ne connaît pas les dépôts et passages à l’oral personnels. Les dates non validées sont en fin de liste. Le filtre accepte `tous`, `AAIT`, `AITDM`, `Big Data` et `SOS`.
+Les commandes exigent le rôle UPB dans le salon configuré. Leurs réponses sont éphémères et ne pingent personne. `passees: vrai` ajoute les échéances antérieures après les dates à venir, avec la mention « rendu personnel à vérifier ». Le bot ne connaît pas les dépôts ni les passages à l'oral personnels. Les dates non validées sont placées en fin de liste. Les filtres acceptés sont `tous`, `AAIT`, `AITDM`, `Big Data` et `SOS`.
 
-## Fonctions
+Pour discuter, adresser un message à Haddock, le mentionner ou répondre à l'un de ses messages. Le fournisseur configuré est **CommandCode**, modèle **DeepSeek V4.1 Flash**, avec un plafond du bot de **10 millions de tokens par jour**, remis à zéro à minuit à Bucarest. Le contexte reste court et en RAM ; le compteur conserve seulement les métadonnées de consommation.
 
-- Moodle et publications/réponses chargées dans Général des quatre équipes Teams ; Administrativ exclu.
-- Nouveautés et changements, puis rappels quotidiens à **08:00 Europe/Bucharest**. IMPORTANT à J-3, URGENT à J-1 et le jour même ; un seul ping UPB par lot de rappels.
-- Embeds compacts, quatre emojis Haddock et bouton « Plus d’infos » privé.
-- Traductions locales anglais/roumain → français ; texte original conservé dans les détails.
-- PDFs versionnés par SHA256, même si le nom ou l’URL reste identique, avec comptage et extraction des pages.
-- Export Obsidian : maître `/srv/obsidian/cours`, copie PC Syncthing en réception seule.
-- Linktree public [BucharestEvents](https://linktr.ee/BucharestEvents) toutes les cinq minutes : nouvelle URL d’activité → carte et ping ESN, référence initiale silencieuse et file persistante.
-- Conversations contextuelles Haddock avec Luna, interventions spontanées rares, réponses courtes et samples vocaux selon le contexte.
-- Quota de **1 000 000 tokens/jour**, entrée + sortie, minuit à Bucarest. Consommation API confirmée et provisions incertaines affichées séparément.
+La personnalité provient du [prompt fourni par l'utilisateur](courswatch/conversation/prompt-haddock.txt). [persona.py](courswatch/conversation/persona.py) le charge et ajoute le contrat technique Discord : décisions JSON, audience autorisée, secrets et faits de cours. Les préférences décrites par le prompt, par exemple `/mode`, se demandent dans la conversation adressée au bot ; elles n'ajoutent pas de nouvelles commandes slash Discord.
 
-## Code et exploitation
+## Fonctions suivies
 
-Le code applicatif est regroupé dans [`courswatch/`](courswatch/). Les fichiers Python historiques à la racine sont des adaptateurs : les anciens imports et chemins CLI restent utilisables et partagent les mêmes modules. Les unités relevées sur le VPS restent dans [`systemd/`](systemd/), sans modification de service pendant ce refactoring local. Les anciens scripts d’installation ponctuelle restent présents avec leurs garde-fous ; ils ne constituent pas une installation automatique universelle.
+- Moodle et publications/réponses effectivement chargées dans Général des quatre équipes Teams ; Administrativ exclu.
+- Nouveautés et rappels quotidiens à **08:00 Europe/Bucharest** : IMPORTANT à J-3, URGENT à J-1 et le jour même, avec un seul ping UPB par lot de rappels.
+- Cartes compactes, bouton privé « Plus d'infos », traductions locales anglais/roumain → français et texte original conservé dans les détails.
+- PDF versionnés par SHA256, même à nom et URL identiques, avec comptage et extraction des pages.
+- Export Obsidian vers le maître `/srv/obsidian/cours`, puis copie PC Syncthing en réception seule.
+- Veille du Linktree public [BucharestEvents](https://linktr.ee/BucharestEvents) toutes les cinq minutes : nouvelle URL d'activité, carte et ping ESN, référence initiale silencieuse et file persistante.
+- Conversations Haddock, interventions spontanées rares et samples vocaux selon le contexte.
 
-- [Architecture et fichiers](docs/ARCHITECTURE.md)
-- [Installation, configuration et maintenance](docs/EXPLOITATION.md)
-- [État et origine du premier import](docs/PREMIER-IMPORT.md)
-- [Préparer et vérifier un lot, modèles et rollback](docs/OPERATIONS-REFACTOR.md)
-- [Profils de tests isolés](tests/README.md)
-- [Rapport du refactoring local du 17 novembre](docs/REFACTOR-2026-11-17.md)
-- [Déploiement VPS et tests du salon du 17 novembre](docs/DEPLOYMENT-2026-11-17.md)
-- [Exemples de configuration](examples/)
-- [Historique documentaire des réglages du 12 novembre](docs/Operations-historique-2026-11-12.md)
-- [Empreintes du code exporté du VPS](docs/source-VPS-SHA256.json)
+Les limites de couverture et les garanties de livraison figurent dans [l'architecture](docs/ARCHITECTURE.md). Le bot n'annonce pas une livraison exactement une fois et ne déduit jamais un rendu manquant d'une date passée.
 
-Le dépôt privé contient les sources, tests, unités, outils de migration et documentation. Les configurations fournies sont des exemples sans authentification. Les `.env`, cookies, profils navigateur, bases SQLite, rapports privés, documents de cours, modèles de traduction et environnements Python restent hors Git.
+## Organisation du dépôt
 
-## Vérifier le code
+| Emplacement | Contenu |
+|---|---|
+| [`courswatch/`](courswatch/) | Implémentations du bot, collecteurs, stockage, documents, publication et conversation |
+| [`tests/`](tests/) | Tests unitaires, intégration sur fixtures, migrations et exploitation |
+| [`ops/`](ops/) | Construction/vérification des lots, inventaire et validation synthétique du salon |
+| [`tools/run_tests.py`](tools/run_tests.py) | Profils de tests isolés |
+| [`systemd/`](systemd/) | Unités et drop-ins de référence, sans deuxième copie à la racine |
+| [`examples/`](examples/) | Exemples de configuration sans authentification |
+| [`assets/`](assets/) | Images, voix, sources et empreintes |
+| [`docs/`](docs/) | Architecture, exploitation et compte rendu CommandCode ; anciens états dans `docs/history/` |
+
+Les vingt modules applicatifs et vingt-sept modules de tests historiques à la racine sont de petits adaptateurs, pas des implémentations dupliquées. Ils conservent les imports, les patches et les anciens chemins CLI. Les autres outils racine maintenus servent à la configuration, au diagnostic ou à la maintenance.
+
+Les scripts ponctuels d'anciennes activations, installations, retouches de messages et rédaction de notes ont été retirés. Leurs sources restent consultables dans Git, notamment dans l'état `14f2040` précédant le nettoyage. Les anciens installateurs qui ne copiaient que les modules racine ne doivent plus servir au package actuel.
+
+## Développer et vérifier
 
 Python 3.12 ou ultérieur, avec les données de fuseaux horaires disponibles :
 
@@ -54,18 +58,23 @@ python -B tools/run_tests.py core
 python -B tools/run_tests.py all
 ```
 
-Le profil `core` conserve les 63 tests de la commande historique. `all` ajoute les conversations, documents, migrations sur fixtures et régressions du pipeline. Le runner isole les fichiers temporaires et les configurations, bloque les connexions externes et n'importe aucun script smoke/probe. Les modèles de traduction ne sont pas nécessaires aux tests mockés ; leur inférence réelle reste une validation distincte dans l'environnement de traduction.
+Le runner isole les configurations et les fichiers temporaires, retire les clés connues de l'environnement et bloque le réseau externe. Les modèles de traduction ne sont pas nécessaires aux tests simulés. Les tests POSIX et de liens symboliques doivent également être exécutés sous Linux ; un test ignoré sous Windows ne les valide pas.
 
-Les anciens appels `python -m unittest test_course_tasks ...` restent compatibles. Utiliser les profils explicites pour éviter de découvrir deux fois les adaptateurs et leurs implémentations. Certains tests de liens symboliques demandent Linux ou les privilèges Windows appropriés ; les tests ignorés sont comptés dans le résultat.
+Les anciens appels `python -m unittest test_course_tasks ...` restent compatibles. Employer les [profils explicites](tests/README.md) pour éviter de découvrir deux fois les adaptateurs et leurs implémentations.
 
-`scan --dry-run` effectue une vraie lecture réseau à partir d'une copie temporaire du profil dédié. Il ne modifie pas la base, le rapport ou la session d'origine et ne livre aucune notification. Ce mode n'est pas un test hors ligne ; fermer la connexion interactive et conserver le verrou de collecte. Les scripts `smoke_luna*` et `probe_luna_usage.py` restent des essais manuels payants exclus des profils.
+Les essais réels sont séparés des tests isolés. `scan --dry-run` effectue une lecture réseau depuis une copie temporaire de la session dédiée ; il ne livre aucune notification et ne modifie ni la base, ni le rapport, ni la session d'origine. `python -m ops.validate_channel --send-test` utilise des cartes synthétiques et impose l'absence de mentions. Les autorisations de tests et la procédure GitHub sont dans [AGENTS.md](AGENTS.md).
 
-## Déploiement du 17 novembre 2026
+## Exploitation et références
 
-Le commit applicatif `3d9e6d4` est installé sur le VPS : 225 tests réussis sous Linux, bot actif et prêt, quatre commandes retrouvées dans Discord. Un message synthétique et sa pagination ont été vérifiés dans le salon avec zéro mention de rôle ou d'utilisateur. Les timers et le watcher ont été rétablis ; configurations et données ont été préservées.
+- [Installation, configuration et maintenance](docs/EXPLOITATION.md)
+- [Préparer un lot, vérifier les modèles et revenir en arrière](docs/OPERATIONS-REFACTOR.md)
+- [Basculement CommandCode, tests réels et redémarrage](docs/COMMANDCODE-2026-11-17.md)
+- [Premier import et origine des sources](docs/history/PREMIER-IMPORT.md)
+- [Déploiement initial du package](docs/history/DEPLOYMENT-2026-11-17.md)
+- [Réactivité des commandes et du chatbot](docs/history/LATENCY-2026-11-17.md)
+- [Rapport de la phase locale de refactoring](docs/history/REFACTOR-2026-11-17.md)
+- [Réglages documentés au 12 novembre](docs/history/Operations-historique-2026-11-12.md), [README exporté du VPS](docs/history/README-source-VPS.md) et [empreintes initiales](docs/history/source-VPS-SHA256.json)
 
-La collecte manuelle réelle Moodle/Teams reste à autoriser après refus du contrôle automatique. Elle n'est pas déclarée testée. Les limites, sauvegardes et résultats détaillés figurent dans le [compte rendu de déploiement](docs/DEPLOYMENT-2026-11-17.md).
+Les documents dans `docs/history/` décrivent leurs dates respectives ; leurs anciens modèles, plafonds et blocages ne sont pas des consignes d'exploitation actuelles. Aucun historique Git antérieur au premier import du 17 novembre 2026 n'a été reconstitué.
 
-## Historique Git
-
-Aucun commit n’existait dans le dossier local et `/opt/cours-watch` n’était pas un dépôt Git lors du contrôle du **17 novembre 2026**. L’historique commence avec ce premier import ; les anciennes dates sont documentaires, sans commits reconstitués. Les évolutions suivantes doivent être commitées ici avant leur déploiement contrôlé.
+Le déploiement actif est dans `/opt/cours-watch`, la configuration privée dans `/etc/cours-watch` et les données dans `/var/lib/cours-watch`. Les secrets, cookies, profils navigateur, bases, rapports privés, documents de cours, modèles et environnements restent hors Git. Le dépôt ne se déploie pas automatiquement : [la procédure de maintenance](docs/EXPLOITATION.md#mettre-à-jour-le-code) conserve les sauvegardes, données, compteurs et reçus.
