@@ -15,7 +15,7 @@ Les commandes exigent le rôle UPB dans le salon configuré. Leurs réponses son
 
 Pour discuter, adresser un message à Haddock, le mentionner ou répondre à l'un de ses messages. Le fournisseur configuré est **CommandCode**, modèle **DeepSeek V4.1 Flash**, avec un plafond du bot de **10 millions de tokens par jour**, remis à zéro à minuit à Bucarest. Le contexte reste court et en RAM ; le compteur conserve seulement les métadonnées de consommation.
 
-La personnalité provient du [prompt fourni par l'utilisateur](courswatch/conversation/prompt-haddock.txt). [persona.py](courswatch/conversation/persona.py) le charge et ajoute le contrat technique Discord : décisions JSON, audience autorisée, secrets et faits de cours. Les préférences décrites par le prompt, par exemple `/mode`, se demandent dans la conversation adressée au bot ; elles n'ajoutent pas de nouvelles commandes slash Discord.
+La façon de parler provient du [prompt adapté du texte fourni par l'utilisateur](courswatch/conversation/prompt-haddock.txt) : paroles seules dans le ton du capitaine, sans mimiques, gestes ou narration. [persona.py](courswatch/conversation/persona.py) ajoute le contrat technique Discord : décisions JSON, audience autorisée, secrets et faits de cours. Les préférences de langage, par exemple `/jurons rares`, se demandent dans la conversation adressée au bot ; elles n'ajoutent pas de nouvelles commandes slash Discord.
 
 ## Fonctions suivies
 

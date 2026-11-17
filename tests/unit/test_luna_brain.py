@@ -113,7 +113,7 @@ class LunaTests(unittest.TestCase):
     def test_supplied_character_prompt_reaches_the_model_with_discord_contract(self):
         transport = Mock(return_value=response())
         brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='fake',transport=transport)
-        brain.decide([{'speaker':'Alice','text':'Haddock, /mode dialogue','is_bot':False}],True)
+        brain.decide([{'speaker':'Alice','text':'Haddock, /jurons rares','is_bot':False}],True)
         payload = transport.call_args.args[0]
         self.assertEqual(payload['instructions'],PERSONA_TEXT.rstrip()+'\n\n'+DISCORD_CONTRACT)
         self.assertEqual(brain.persona_version,PERSONA_VERSION)
