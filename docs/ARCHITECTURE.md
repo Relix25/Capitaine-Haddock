@@ -43,3 +43,37 @@ Une modification du contenu d’un Google Form ou du seul titre d’un lien n’
 ## Séparation des données
 
 Code root dans `/opt/cours-watch`, configuration privée dans `/etc/cours-watch`, données et sessions dans `/var/lib/cours-watch`. Aucun de ces états privés ne doit être importé dans Git. Le coffre maître des cours est `/srv/obsidian/cours` ; sa copie PC reste Syncthing receiveonly. Le coffre système `/srv/obsidian/vault` contient la documentation d’exploitation, distincte des cours.
+
+## Organisation après refactoring local — 17 novembre 2026
+
+Le package `courswatch` contient les implémentations ; les anciens fichiers à la racine restent des adaptateurs compatibles. Un import historique et son import canonique désignent le même objet module, y compris pour les patches de tests et la configuration. Le collecteur peut également être lancé par `python -m courswatch`.
+
+| Dossier/module canonique | Responsabilité |
+|---|---|
+| `models.py`, `settings.py` | Observations et identités pures ; chemins partagés et commande de collecte explicite |
+| `runtime.py` | Sessions dédiées, CLI, simulation isolée et bilan des étapes |
+| `collectors/` | Lecture Moodle/Teams et ESN |
+| `storage/` | État/outbox/reçus SQLite et migrations additives versionnées |
+| `discord_app/` | Gateway, commandes, vues, transport, livraison et santé |
+| `documents/` | Transfert borné, archives SHA256, correspondances de pièces jointes et publication PDF |
+| `publishing/` | Snapshot pédagogique et notes automatiques |
+| `conversation/` | Luna, mémoire, quota, répliques et voix |
+| `translation.py`, `translation_worker.py` | Cache et worker local ; dépendances d'inférence chargées à l'utilisation |
+
+Les modules applicatifs n'importent plus les points d'entrée historiques. Les tests sont regroupés sous `tests/` avec des adaptateurs à la racine ; `tools/run_tests.py` sélectionne les profils explicitement. `ops/` prépare des lots, des inventaires et des vérifications sans installer de service.
+
+### État et reprise
+
+`storage/schema.py` versionne séparément les schémas des observations, du quota et des cartes privées. Les migrations se font sous transaction ; les colonnes et tables historiques restent compatibles avec l'ancien code. L'initialisation conserve son appel depuis les constructeurs pour les anciens consommateurs, mais les transformations sont centralisées, nommées et appliquées une seule fois.
+
+Chaque collecte réussie reçoit une génération indépendante de la précision de l'horloge. Les documents gardent leur dernier statut et leur génération de vérification. Une échéance documentaire ne devient pas fraîche sur la seule base d'une page Moodle accessible : erreur ou document non revu impose une revalidation. Les archives et les observations antérieures restent conservées ; une plateforme inaccessible garde la dernière date connue signalée comme telle.
+
+`complete_scan` conserve l'ingestion et la file, puis distingue rappel, livraison et publication. Une panne Discord n'empêche plus le nouveau bilan ou le snapshot pédagogique. Le rapport est remplacé atomiquement et le statut global devient partiel lorsqu'une étape échoue. `/actualiser` présente explicitement une livraison en attente. La fenêtre de doublon entre acceptation distante et reçu local demeure ; aucune garantie « exactement une fois » n'est annoncée.
+
+### Documents et mémoire
+
+Les contextes Playwright réels utilisent un client HTTP borné avec les seuls cookies Moodle du contexte dédié, conservés en mémoire. Chaque redirection est validée ; la taille est bornée pendant le transfert et les réponses sont fermées. Les changements de cookies sont resynchronisés vers le même contexte lorsqu'il est fourni. Le transport tamponné historique subsiste seulement pour les doubles de tests sans API de session.
+
+Les octets d'un lot de pièces jointes sont stockés temporairement dans un dossier privé ; seules les métadonnées restent en RAM entre téléchargements. L'archivage relit un PDF à la fois, sans retéléchargement. Les correspondances dans `COURSE/bindings/` fixent le lien entre l'attachement principal et l'ancien catalogue du module. Un ancien SHA doit identifier une unique pièce jointe pour créer ce lien ; sinon le catalogue historique reste figé et les nouveaux documents utilisent leurs identités propres avec avertissement. Aucun ancien PDF ou catalogue n'est effacé.
+
+Les sessions Moodle réelles et la compatibilité des trois environnements sur Linux restent à vérifier en staging. L'outil d'audit autonome sans contexte navigateur ne resynchronise pas entre appels une éventuelle rotation de cookie ; il reste distinct du chemin de production du bot.

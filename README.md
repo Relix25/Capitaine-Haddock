@@ -27,11 +27,14 @@ Les commandes exigent le rôle UPB dans le salon configuré. Les réponses de co
 
 ## Code et exploitation
 
-Le code Python reste à la racine pour correspondre à son installation dans `/opt/cours-watch`. Les unités réellement relevées sur le VPS sont dans [`systemd/`](systemd/). Les anciens scripts d’installation ponctuelle restent présents avec leurs garde-fous ; ils ne constituent pas une installation automatique universelle.
+Le code applicatif est regroupé dans [`courswatch/`](courswatch/). Les fichiers Python historiques à la racine sont des adaptateurs : les anciens imports et chemins CLI restent utilisables et partagent les mêmes modules. Les unités relevées sur le VPS restent dans [`systemd/`](systemd/), sans modification de service pendant ce refactoring local. Les anciens scripts d’installation ponctuelle restent présents avec leurs garde-fous ; ils ne constituent pas une installation automatique universelle.
 
 - [Architecture et fichiers](docs/ARCHITECTURE.md)
 - [Installation, configuration et maintenance](docs/EXPLOITATION.md)
 - [État et origine du premier import](docs/PREMIER-IMPORT.md)
+- [Préparer et vérifier un lot, modèles et rollback](docs/OPERATIONS-REFACTOR.md)
+- [Profils de tests isolés](tests/README.md)
+- [Rapport du refactoring local du 17 novembre](docs/REFACTOR-2026-11-17.md)
 - [Exemples de configuration](examples/)
 - [Historique documentaire des réglages du 12 novembre](docs/Operations-historique-2026-11-12.md)
 - [Empreintes du code exporté du VPS](docs/source-VPS-SHA256.json)
@@ -45,11 +48,16 @@ Python 3.12 ou ultérieur, avec les données de fuseaux horaires disponibles :
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install discord.py==2.7.1 tzdata
-python -m unittest test_course_tasks test_course_bot test_reminders test_discord_presentation test_course_health test_state
+python -m pip install -r requirements-bot.txt -r requirements-documents.lock tzdata
+python -B tools/run_tests.py core
+python -B tools/run_tests.py all
 ```
 
-Cette suite contient **63 tests** et n’appelle ni OpenAI ni les plateformes. Les autres tests de PDF nécessitent `requirements-documents.lock`. Les scripts `smoke_luna*`, `probe_luna_usage.py` et certaines options diagnostiques sont des essais manuels payants ; ils ne font pas partie de cette commande de test.
+Le profil `core` conserve les 63 tests de la commande historique. `all` ajoute les conversations, documents, migrations sur fixtures et régressions du pipeline. Le runner isole les fichiers temporaires et les configurations, bloque les connexions externes et n'importe aucun script smoke/probe. Les modèles de traduction ne sont pas nécessaires aux tests mockés ; leur inférence réelle reste une validation distincte dans l'environnement de traduction.
+
+Les anciens appels `python -m unittest test_course_tasks ...` restent compatibles. Utiliser les profils explicites pour éviter de découvrir deux fois les adaptateurs et leurs implémentations. Certains tests de liens symboliques demandent Linux ou les privilèges Windows appropriés ; les tests ignorés sont comptés dans le résultat.
+
+`scan --dry-run` effectue une vraie lecture réseau à partir d'une copie temporaire du profil dédié. Il ne modifie pas la base, le rapport ou la session d'origine et ne livre aucune notification. Ce mode n'est pas un test hors ligne ; fermer la connexion interactive et conserver le verrou de collecte. Les scripts `smoke_luna*` et `probe_luna_usage.py` restent des essais manuels payants exclus des profils.
 
 ## Historique Git
 

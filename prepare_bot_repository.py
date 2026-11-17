@@ -1,7 +1,7 @@
 """Prepare the first repository from local tooling and a verified code-only VPS export."""
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import tarfile
@@ -11,10 +11,45 @@ SOURCE = Path(__file__).resolve().parent
 DEST = ROOT / 'Outils/Capitaine-Haddock'
 
 
+def verified_export(archive, manifest_path):
+    """Validate every member before making a destination or copying any files."""
+    manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    expected = {}
+    for entry in manifest:
+        name = entry['path']
+        relative = Path(name)
+        if (relative.is_absolute() or PureWindowsPath(name).drive or '..' in relative.parts
+                or '\\' in name or not name or name in expected
+                or not re.fullmatch(r'[a-f0-9]{64}', entry['sha256'])):
+            raise ValueError('Invalid export manifest')
+        expected[name] = entry['sha256']
+    verified = {}
+    with tarfile.open(archive, 'r:*') as bundle:
+        for member in bundle.getmembers():
+            relative = Path(member.name)
+            if member.isdir():
+                continue
+            if (not member.isfile() or relative.is_absolute() or PureWindowsPath(member.name).drive
+                    or '..' in relative.parts or '\\' in member.name
+                    or member.name not in expected or member.name in verified
+                    or member.size > 2 * 1024 * 1024):
+                raise ValueError('Unsafe or unexpected archive member')
+            with bundle.extractfile(member) as stream:
+                data = stream.read()
+            if hashlib.sha256(data).hexdigest() != expected[member.name]:
+                raise ValueError('Export member hash mismatch: ' + member.name)
+            verified[member.name] = data
+    if verified.keys() != expected.keys():
+        raise ValueError('Export manifest and archive differ')
+    return verified
+
+
 def main():
     archive = ROOT / '.extraction/capitaine-source-20261117.tar.gz'
     if hashlib.sha256(archive.read_bytes()).hexdigest() != '83dab358e2bd3c82d9ca871308a8645231ec73d84fd9cd908ecc705cfef05275':
         raise SystemExit('Unexpected VPS export')
+    manifest_path = ROOT / '.extraction/capitaine-source-20261117-manifest.json'
+    verified = verified_export(archive, manifest_path)
     DEST.mkdir(exist_ok=False)
     (DEST / 'docs').mkdir()
     (DEST / 'examples').mkdir()
@@ -25,18 +60,10 @@ def main():
     for name in ('config.json','reminders.json','translation.json'):
         shutil.copy2(SOURCE / name,DEST / name)
     shutil.copy2(SOURCE / 'README.md',DEST / 'docs/Operations-historique-2026-11-12.md')
-    with tarfile.open(archive,'r:gz') as bundle:
-        for member in bundle.getmembers():
-            relative = Path(member.name)
-            if member.isdir():
-                continue
-            if not member.isfile() or relative.is_absolute() or '..' in relative.parts:
-                raise SystemExit('Unsafe archive member')
-            target = DEST / ('docs/README-source-VPS.md' if member.name == 'README.md' else member.name)
-            if not target.resolve().is_relative_to(DEST.resolve()):
-                raise SystemExit('Unsafe target')
-            target.parent.mkdir(parents=True,exist_ok=True)
-            target.write_bytes(bundle.extractfile(member).read())
+    for name, data in verified.items():
+        target = DEST / ('docs/README-source-VPS.md' if name == 'README.md' else name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     shutil.copy2(ROOT / '.extraction/capitaine-source-20261117-manifest.json',DEST / 'docs/source-VPS-SHA256.json')
     # Code-only scan: emit locations, never the matched secret-like contents.
     rules = {

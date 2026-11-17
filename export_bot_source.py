@@ -1,5 +1,6 @@
 """Export code and systemd units only; never read configuration or runtime data."""
 import hashlib
+import io
 import json
 from pathlib import Path
 import tarfile
@@ -10,6 +11,17 @@ def main():
     files = [(path,Path(path.name)) for path in sorted(root.iterdir())
              if path.is_file() and not path.is_symlink()
              and (path.suffix in {'.py','.sh','.txt','.lock'} or path.name == 'README.md')]
+    for package in ('courswatch', 'ops', 'tools', 'tests'):
+        folder = root / package
+        if folder.is_symlink():
+            raise SystemExit('Symlinked source package')
+        if folder.exists():
+            for path in sorted(folder.rglob('*.py')):
+                if (path.is_symlink() or any(parent.is_symlink() for parent in path.parents
+                                             if parent != root and parent.is_relative_to(root))):
+                    raise SystemExit('Symlinked source file')
+                if path.is_file() and '__pycache__' not in path.parts:
+                    files.append((path, path.relative_to(root)))
     assets = root / 'assets'
     if assets.exists():
         for path in sorted(assets.rglob('*')):
@@ -32,7 +44,9 @@ def main():
                 raise SystemExit('Unexpected source file size')
             if any(part in {'.env','secrets.json','browser-profile','models','reports'} for part in name.parts):
                 raise SystemExit('Unexpected source path')
-            archive.add(path,arcname=str(name),recursive=False)
+            info = archive.gettarinfo(str(path), arcname=name.as_posix())
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
             manifest.append({'path':name.as_posix(),'sha256':hashlib.sha256(data).hexdigest()})
     output.chmod(0o644)
     report = Path('/tmp/capitaine-source-20261117-manifest.json')

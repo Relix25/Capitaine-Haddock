@@ -30,3 +30,5 @@ config.local.json
 *.tar
 *.tar.gz
 *.zip
+.test-tmp/
+.releases/
