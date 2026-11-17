@@ -19,14 +19,15 @@ def effective_settings(data, settings):
         selection = json.loads((Path(data) / 'model-selection.json').read_text())
     except FileNotFoundError:
         return result
-    if (not isinstance(selection, dict) or set(selection) != {'selection'}
-            or not isinstance(selection['selection'], str) or selection['selection'] not in MODEL_CHOICES):
+    if (not isinstance(selection, dict) or set(selection) not in ({'selection'}, {'selection','debug'})
+            or not isinstance(selection['selection'], str) or selection['selection'] not in MODEL_CHOICES
+            or not isinstance(selection.get('debug', True), bool)):
         raise ValueError('Invalid model selection')
-    return {**result, **MODEL_CHOICES[selection['selection']]}
+    return {**result, **MODEL_CHOICES[selection['selection']], 'debug':selection.get('debug', True)}
 
 
-def save_selection(data, selection):
-    if selection not in MODEL_CHOICES:
+def save_preferences(data, selection, debug):
+    if selection not in MODEL_CHOICES or not isinstance(debug, bool):
         raise ValueError('Unsupported model selection')
     directory = Path(data)
     temporary = None
@@ -35,7 +36,7 @@ def save_selection(data, selection):
                                          prefix='.model-selection-', delete=False) as stream:
             temporary = Path(stream.name)
             temporary.chmod(0o600)
-            json.dump({'selection': selection}, stream)
+            json.dump({'selection': selection, 'debug': debug}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, directory / 'model-selection.json')

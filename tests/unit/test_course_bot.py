@@ -35,7 +35,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         with patch('course_bot.configuration',return_value=self.config()):
             bot = CourseBot('fake-not-a-token')
             commands = bot.tree.get_commands(guild=bot.scope)
-            self.assertEqual({c.name for c in commands},{'cours','actualiser','status','a-faire','modele'})
+            self.assertEqual({c.name for c in commands},{'cours','actualiser','status','a-faire','settings'})
             self.assertFalse(bot.intents.message_content)
             self.assertFalse(bot.intents.members)
             self.assertFalse(bot.intents.presences)

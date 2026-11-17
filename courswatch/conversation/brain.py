@@ -257,7 +257,8 @@ class LunaBrain:
         self.publish(('daily_limit' if self.budget.snapshot()['blocked'] else 'ready') if self.key else 'missing_key')
 
     def publish(self,status,error_code=None,outcome=None):
-        report = {**self.budget.snapshot(),'provider':self.provider,'model':self.model,'require_zdr':self.require_zdr,'persona_version':self.persona_version,'status':status,
+        report = {**self.budget.snapshot(),'provider':self.provider,'model':self.model,'require_zdr':self.require_zdr,
+                  'debug_enabled':self.config.get('debug',True),'persona_version':self.persona_version,'status':status,
                   'checked_utc':datetime.now(timezone.utc).isoformat(timespec='seconds')}
         if error_code:
             report['error_code'] = error_code

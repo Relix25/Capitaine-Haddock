@@ -31,6 +31,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat.bot,chat.data,chat.config_loader = bot,Path('/no-access'),lambda:{}
         chat.brain = SimpleNamespace(decide=MagicMock(return_value={'action':'text','reply':'À bord !','sample_id':'none'}))
         chat.model_lock = asyncio.Lock()
+        chat.debug_enabled = True
         chat.memory,chat.cadence = ChatMemory(),ChatCadence()
         chat.pending_direct = chat.pending_ambient = chat.task = None
         chat.closed,chat.sequence = False,0
@@ -252,7 +253,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             await bot.on_message(self.message())
             bot.luna.accept.assert_called_once()
             self.assertEqual({c.name for c in bot.tree.get_commands(guild=bot.scope)},
-                             {'a-faire','cours','actualiser','status','modele'})
+                             {'a-faire','cours','actualiser','status','settings'})
             await bot.close()
 
     async def test_meaningful_text_is_not_randomly_replaced_with_audio(self):
@@ -350,6 +351,27 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(987,chat.memory.bot_ids)
         self.assertNotIn('PRIVATE_SENTINEL',str(chat.bot.write_status.call_args_list))
         self.assertEqual(chat.bot.write_status.call_args.kwargs['last_luna_reply']['format'],'voice')
+        await chat.close()
+
+    async def test_debug_off_hides_text_footer_and_keeps_spoken_memory(self):
+        chat=self.chat();chat.debug_enabled=False;message=self.message()
+        decision=MeasuredResult({'action':'text','reply':'À bord !','sample_id':'none'},
+            {'model':'tencent/hy4-flash','ttft_ms':100,'api_ms':300,'total_tokens':50})
+        await chat.deliver(message,decision,True)
+        self.assertEqual(message.reply.await_args.args[0],'À bord !')
+        self.assertEqual(chat.memory.context()[-1]['text'],'À bord !')
+        self.assertEqual(decision.metrics['total_tokens'],50)
+        await chat.close()
+
+    async def test_debug_off_sends_voice_without_companion_metrics_message(self):
+        chat=self.chat();chat.debug_enabled=False;message=self.message()
+        chat.bot.voice_samples=[SimpleNamespace(id='cafe')]
+        with patch('luna_chat.random.random',return_value=.1), \
+             patch('luna_chat.send_voice_message',return_value={'id':'987'}):
+            await chat.deliver(message,{'action':'sample','reply':'Un café.','sample_id':'cafe'},True)
+        message.reply.assert_not_awaited()
+        message.channel.send.assert_not_awaited()
+        self.assertIn(987,chat.memory.bot_ids)
         await chat.close()
 
 

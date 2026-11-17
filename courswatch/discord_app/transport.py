@@ -29,7 +29,7 @@ def discord_request(url, payload, token=None, method='POST'):
     headers = {'Content-Type': 'application/json', 'User-Agent': 'UPBCourseWatch/1.0'}
     if token:
         headers['Authorization'] = 'Bot ' + token
-    data = json.dumps(payload).encode()
+    data = None if method in ('GET','DELETE') else json.dumps(payload).encode()
     for attempt in range(3):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:

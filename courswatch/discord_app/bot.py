@@ -23,7 +23,7 @@ from courswatch.discord_app.emojis import button_emoji, icon
 from courswatch.conversation.easter_egg import HaddockEasterEgg, triggered
 from courswatch.conversation.voice import load_samples, choose_sample, send_voice_message, VoiceMessageError
 from courswatch.conversation.chat import LunaChat
-from courswatch.conversation.models import MODEL_CHOICES, MODEL_LABELS
+from courswatch.discord_app.settings_ui import SettingsModal, authorize_settings
 from courswatch.discord_app.presentation import compact_embed, interaction_allowed, private_details, DETAIL_CUSTOM_ID
 from courswatch.discord_app.responses import prepare_private, send_private
 
@@ -196,6 +196,13 @@ class CourseBot(discord.Client):
             await asyncio.to_thread(discord_request,
                 'https://discord.com/api/v10/applications/' + str(cfg['application_id']) + '/guilds/' + str(self.scope.id) + '/commands',
                 command.to_dict(self.tree), self.token_value)
+        # Retire only the old chatbot command, preserving other app commands.
+        url = ('https://discord.com/api/v10/applications/' + str(cfg['application_id']) +
+               '/guilds/' + str(self.scope.id) + '/commands')
+        commands = await asyncio.to_thread(discord_request,url,{},self.token_value,method='GET')
+        for command in commands:
+            if command.get('name') in ('modele','modèle') and command.get('type',1) == 1:
+                await asyncio.to_thread(discord_request,url+'/'+str(command['id']),{},self.token_value,method='DELETE')
         self.commands_registered = True
 
     async def on_ready(self):
@@ -212,6 +219,7 @@ class CourseBot(discord.Client):
                           voice_samples=len(self.voice_samples),voice_probability=self.voice_probability,
                           luna_enabled=self.luna_enabled,luna_model=self.luna.brain.model if self.luna else None,
                           luna_provider=self.luna.brain.provider if self.luna else None,
+                          luna_debug_enabled=self.luna.debug_enabled if self.luna else None,
                           luna_persona=self.luna.brain.persona_version if self.luna else None,
                           voice_enabled=bool(self.voice_probability and self.voice_samples))
         previous = read_json(DATA / 'reports/bot-status.json').get('last_manual_scan',{})
@@ -290,37 +298,12 @@ class CourseBot(discord.Client):
             await asyncio.to_thread(remember_private_card,DATA,message.id,interaction.user.id,event)
 
     def register_commands(self):
-        @self.tree.command(name='modele',description='Afficher ou changer le modèle du chatbot (administrateurs).',guild=self.scope)
+        @self.tree.command(name='settings',description='Régler le modèle et le mode debug du chatbot (administrateurs).',guild=self.scope)
         @app_commands.default_permissions(administrator=True)
-        @app_commands.describe(choix='Choisir HY4 Flash ou DeepSeek ; choix conservé après redémarrage')
-        @app_commands.choices(choix=[app_commands.Choice(name=label,value=key) for key,label in MODEL_LABELS.items()])
-        async def modele(interaction:discord.Interaction,choix:str=None):
-            if not await self.authorize(interaction):
+        async def settings(interaction:discord.Interaction):
+            if not await authorize_settings(self,interaction):
                 return
-            if not getattr(getattr(interaction.user,'guild_permissions',None),'administrator',False):
-                await interaction.response.send_message('Changement de modèle réservé aux administrateurs.',
-                    ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
-                return
-            if not self.luna or self.luna.brain.provider != 'commandcode':
-                await interaction.response.send_message('Le chatbot CommandCode est désactivé.',
-                    ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
-                return
-            if choix is not None:
-                await interaction.response.defer(ephemeral=True,thinking=True)
-                try:
-                    await self.luna.switch_model(choix)
-                except (OSError,ValueError):
-                    await interaction.followup.send('Le changement a échoué. Le modèle actif est conservé.',
-                        ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
-                    return
-                try:
-                    self.write_status(luna_model=self.luna.brain.model,luna_provider=self.luna.brain.provider)
-                except OSError:
-                    pass
-            label = next((label for key,label in MODEL_LABELS.items()
-                          if self.luna.brain.model == MODEL_CHOICES[key]['model']), self.luna.brain.model)
-            privacy = 'ZDR exigé.' if self.luna.brain.require_zdr else 'ZDR non exigé ; aucune garantie de non-conservation par le fournisseur.'
-            await send_private(interaction, 'Modèle actif : **'+label+'**. '+privacy)
+            await interaction.response.send_modal(SettingsModal(self,interaction.user.id))
 
         @self.tree.command(name='a-faire',description='Prochaines échéances en privé : trois tâches par message, une carte chacune.',guild=self.scope)
         @app_commands.describe(cours='Choisir un cours ou tous les cours',passees='Inclure aussi les dates passées, après les tâches à venir')

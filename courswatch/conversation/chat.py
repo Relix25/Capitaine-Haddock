@@ -16,7 +16,7 @@ from courswatch.models import stamp
 from courswatch.conversation.easter_egg import triggered
 from courswatch.conversation.voice import send_voice_message, VoiceMessageError
 from courswatch.conversation.metrics import MeasuredResult, footer, local_metrics, reply_with_footer
-from courswatch.conversation.models import MODEL_CHOICES, effective_settings, save_selection
+from courswatch.conversation.models import MODEL_CHOICES, effective_settings, save_preferences
 from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, addressed,
                         BudgetExhausted, LunaError, BUDGET_REPLY, OFFLINE_REPLY,
                         REPHRASE_REPLY, REFUSAL_REPLY, RESPONSE_ERRORS, safe_text)
@@ -25,7 +25,11 @@ from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, a
 class LunaChat:
     def __init__(self,bot,data,settings,config_loader):
         self.bot,self.data,self.config_loader = bot,data,config_loader
-        self.brain = LunaBrain(data,effective_settings(data,settings))
+        settings = effective_settings(data,settings)
+        self.debug_enabled = settings.get('debug', True)
+        if not isinstance(self.debug_enabled, bool):
+            raise ValueError('debug must be a boolean')
+        self.brain = LunaBrain(data,settings)
         self.model_lock = asyncio.Lock()
         self.memory,self.cadence = ChatMemory(),ChatCadence()
         self.pending_direct = self.pending_ambient = None
@@ -35,16 +39,18 @@ class LunaChat:
         self.retry_after = 0
         self.clock, self.sleep = time.monotonic, asyncio.sleep
 
-    async def switch_model(self, selection):
-        if self.brain.provider != 'commandcode' or selection not in MODEL_CHOICES:
+    async def apply_settings(self, selection, debug):
+        if (self.brain.provider != 'commandcode' or selection not in MODEL_CHOICES
+                or not isinstance(debug, bool)):
             raise ValueError('Unsupported model selection')
         # Let an in-flight response finish under its original model/privacy policy.
         async with self.model_lock:
-            await asyncio.to_thread(save_selection, self.data, selection)
+            await asyncio.to_thread(save_preferences, self.data, selection, debug)
             profile = MODEL_CHOICES[selection]
-            self.brain.config = {**self.brain.config, **profile}
+            self.brain.config = {**self.brain.config, **profile, 'debug':debug}
             self.brain.model = profile['model']
             self.brain.require_zdr = profile['require_zdr']
+            self.debug_enabled = debug
             self.retry_after = 0
             try:
                 await asyncio.to_thread(self.brain.publish,
@@ -203,6 +209,7 @@ class LunaChat:
             self.bot.write_status(last_luna_callback_error={'error_type':type(error).__name__,'checked_utc':stamp()})
 
     async def deliver(self,message,decision,direct,conversation=True):
+        debug = self.debug_enabled
         metrics = getattr(decision,'metrics',{})
         if not metrics and not conversation:
             metrics = local_metrics()
@@ -219,14 +226,16 @@ class LunaChat:
                 self.bot.write_status(last_voice_error={'error_type':type(error).__name__,'checked_utc':stamp()})
         if reply_id is None:
             try:
-                content = reply_with_footer(safe_text(decision['reply']),metrics,local_response=not conversation)
+                content = safe_text(decision['reply'])
+                if debug:
+                    content = reply_with_footer(content,metrics,local_response=not conversation)
                 reply = await message.reply(content,mention_author=False,
                                             allowed_mentions=discord.AllowedMentions.none())
                 reply_id = reply.id
             except discord.HTTPException:
                 self.bot.write_status(last_luna_delivery_error=stamp())
                 return
-        else:
+        elif debug:
             # Native Discord voice messages reject text content. Keep their
             # measurements in a small reply to that audio, without a mention.
             try:

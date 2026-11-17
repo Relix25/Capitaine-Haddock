@@ -24,8 +24,11 @@ def main():
 
     commands = get('/applications/' + config['application_id'] + '/guilds/' + config['guild_id'] + '/commands')
     names = {command['name'] for command in commands}
-    if not {'cours','actualiser','status','a-faire','modele'} <= names:
+    if not {'cours','actualiser','status','a-faire','settings'} <= names or names & {'modele','modèle'}:
         raise SystemExit('Expected live commands are missing')
+    settings_command = next(command for command in commands if command['name']=='settings')
+    if int(settings_command.get('default_member_permissions') or 0) != 8 or settings_command.get('options'):
+        raise SystemExit('Settings command permissions or options are unexpected')
     message = get('/channels/' + config['channel_id'] + '/messages/1570230953404665994')
     buttons = [button for row in message.get('components',[]) for button in row.get('components',[])]
     if not message.get('embeds') or not any(button.get('custom_id') == 'cours-watch:details' for button in buttons):
@@ -65,9 +68,12 @@ def main():
                 or status.get('luna_persona') != PERSONA_VERSION or luna.get('persona_version') != PERSONA_VERSION
                 or luna.get('daily_token_limit') != settings.get('daily_token_limit',1_000_000)
                 or luna.get('require_zdr',True) != settings.get('require_zdr',True)
+                or status.get('luna_debug_enabled') != settings.get('debug',True)
+                or luna.get('debug_enabled') != settings.get('debug',True)
                 or luna.get('status') not in ('ready','daily_limit')):
             raise SystemExit('Luna conversation mode or daily token ceiling is not ready')
-        proof.update(luna_enabled=True,luna_provider=provider,luna_model=status['luna_model'],luna_require_zdr=luna['require_zdr'],luna_daily_token_limit=luna['daily_token_limit'],
+        proof.update(luna_enabled=True,luna_provider=provider,luna_model=status['luna_model'],luna_require_zdr=luna['require_zdr'],
+                     luna_debug_enabled=status['luna_debug_enabled'],luna_daily_token_limit=luna['daily_token_limit'],
                      luna_status=luna['status'],luna_used_tokens=luna['used_tokens'],luna_persona=status['luna_persona'])
     output = Path('/tmp/cours-watch-bot-proof.json')
     output.write_text(json.dumps(proof,ensure_ascii=False,indent=2))
