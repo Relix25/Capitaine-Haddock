@@ -72,6 +72,7 @@ Les essais réels sont séparés des tests isolés. `scan --dry-run` effectue un
 - [Préparer un lot, vérifier les modèles et revenir en arrière](docs/OPERATIONS-REFACTOR.md)
 - [Basculement CommandCode, tests réels et redémarrage](docs/COMMANDCODE-2026-11-17.md)
 - [Mesures TTFT DeepSeek Normal, Fast et Ultrafast](docs/benchmarks/DEEPSEEK-2026-11-17.md)
+- [Évaluation de Tencent HY4 Flash comme alternative](docs/benchmarks/HY4-2026-11-17.md)
 - [Premier import et origine des sources](docs/history/PREMIER-IMPORT.md)
 - [Déploiement initial du package](docs/history/DEPLOYMENT-2026-11-17.md)
 - [Réactivité des commandes et du chatbot](docs/history/LATENCY-2026-11-17.md)
