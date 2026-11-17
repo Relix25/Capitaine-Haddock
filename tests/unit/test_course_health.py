@@ -144,6 +144,18 @@ class HealthTests(unittest.TestCase):
         self.assertIn('100 / 10 000 000',card)
         self.assertIn('Conversations · Haddock',card)
 
+    def test_provider_rejection_marks_overall_health_until_recovery(self):
+        self.config['discord']['luna'] = {'enabled': True, 'provider': 'commandcode',
+                                          'model': 'tencent/hy4-flash'}
+        TokenBudget(self.root/'luna-usage.db', 10_000, now=lambda: self.now)
+        report = self.root/'reports/luna-status.json'
+        report.write_text(json.dumps({'status': 'error', 'error_code': 'http_400'}))
+        snapshot = self.snapshot()
+        self.assertIn('Conversations avec Haddock à vérifier', snapshot['issues'])
+        self.assertEqual(status_embed(snapshot)['color'], 0xF39C12)
+        report.write_text(json.dumps({'status': 'ready'}))
+        self.assertEqual(self.snapshot()['issues'], [])
+
     def test_luna_status_reads_today_ledger_without_changing_it_and_resets_at_midnight(self):
         self.config['discord']['luna'] = {'enabled':True,'daily_token_limit':100,
                                          'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'}

@@ -4,11 +4,12 @@ import json
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
-from playwright.async_api import async_playwright
 from courswatch.runtime import moodle_cookies
 
 
 async def main():
+    from playwright.async_api import async_playwright
+
     root = Path('/var/lib/cours-watch')
     config = json.loads(Path('/etc/cours-watch/config.json').read_text())
     saved = moodle_cookies(root)

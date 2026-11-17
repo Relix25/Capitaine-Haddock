@@ -152,6 +152,32 @@ class IngestionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(journal.coverage(source.scope)['complete'])
         self.bot.luna.observe.assert_not_called()
 
+    async def test_first_history_failure_is_retried_without_a_cursor(self):
+        chat = self.attach_chat()
+        chat.media = None
+        attempts = []
+
+        async def history(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise OSError('history temporarily unavailable')
+            for message in ():
+                yield message
+
+        channel = SimpleNamespace(id=2, history=history)
+        with patch.object(self.bot, 'get_guild', return_value=None), \
+                patch.object(self.bot, 'get_channel', return_value=channel):
+            await self.bot.backfill_conversations(channel)
+            self.assertTrue(self.bot.history_retry_needed)
+            self.assertFalse(chat.journal.checkpoint.called)
+            with patch.object(self.bot, 'is_closed', side_effect=[False, True]), \
+                    patch('courswatch.discord_app.bot.asyncio.sleep', new_callable=AsyncMock):
+                await self.bot.conversation_maintenance()
+            await self.bot.history_task
+        self.assertEqual(len(attempts), 2)
+        self.assertFalse(self.bot.history_retry_needed)
+        self.assertEqual(self.bot.write_status.call_args.kwargs['conversation_backfill']['status'], 'complete')
+
     async def test_atomic_status_writers_preserve_independent_fields(self):
         from concurrent.futures import ThreadPoolExecutor
         import json

@@ -3,6 +3,7 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 import io
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 import tempfile
@@ -206,12 +207,12 @@ class MediaCacheRetentionTests(unittest.TestCase):
             cache.put(scope, 'source', 'profile', 'hash', {'description': 'EXPIRED_PRIVATE_DESCRIPTION'})
             now[0] = 86401
             self.assertIsNone(cache.by_source(scope, 'source', 'profile'))
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM source_cache').fetchone()[0], 0)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM analyses').fetchone()[0], 1)
             now[0] = 90 * 86400 + 1
             self.assertIsNone(cache.get(scope, 'hash'))
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM analyses').fetchone()[0], 0)
             self.assertNotIn(b'EXPIRED_PRIVATE_DESCRIPTION', path.read_bytes())
 
@@ -224,17 +225,17 @@ class MediaCacheRetentionTests(unittest.TestCase):
             cache.put(scope, 'source', 'profile', 'hash', {'description': 'old'})
             now[0] = 90 * 86400 + 1
             cache = MediaCache(path, now=lambda: now[0])
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM analyses').fetchone()[0], 0)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM source_cache').fetchone()[0], 0)
                 db.executemany('INSERT INTO analyses VALUES(?,?,?,?)',
                                [(scope.key, str(index), '{}', 0) for index in range(300)])
                 db.commit()
             self.assertEqual(cache.purge(force=True, batch_size=128)['analyses'], 128)
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM analyses').fetchone()[0], 172)
             cache.get(scope, 'missing')  # Backlog continues on a read; no put.
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM analyses').fetchone()[0], 0)
 
 
@@ -257,6 +258,16 @@ class MediaServiceTests(unittest.IsolatedAsyncioTestCase):
         service = MediaService(self.root, self.journal, **values)
         self.services.append(service)
         return service
+
+    async def test_service_applies_custom_retention_to_cached_descriptions(self):
+        now = [0]
+        cache = self.service(retention_days=7, now=lambda: now[0]).cache
+        scope = Scope('guild', 'channel')
+        cache.put(scope, 'source', 'profile', 'key', {'description':'synthetic expired image'})
+        now[0] = 7 * 86400 + 1
+        self.assertIsNone(cache.get(scope, 'key'))
+        with closing(sqlite3.connect(cache.path)) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM analyses').fetchone()[0], 0)
 
     async def test_image_only_remains_silent_and_observation_keeps_attribution_source_and_ocr(self):
         envelope = self.journal.add(message())

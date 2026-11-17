@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Receive the authorized webhook on stdin; never log its token or URL."""
-import grp
 import json
 import os
 from pathlib import Path
@@ -10,6 +9,8 @@ import urllib.request
 
 
 def save(path, value):
+    import grp
+
     pending=path.with_name(path.name+'.pending')
     pending.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n')
     os.chown(pending,0,grp.getgrnam('courswatch').gr_gid)

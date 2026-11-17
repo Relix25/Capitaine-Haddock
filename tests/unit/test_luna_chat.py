@@ -156,6 +156,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         brain = SimpleNamespace(decide=MagicMock(return_value={'action':'text','reply':'À bord !','sample_id':'none'}))
         chat = LunaChat(bot,Path(directory.name),{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},
                         lambda:{},journal=False,knowledge=False,brain=brain)
+        chat.participation_vote = MagicMock(return_value=(True,'fake-judge',1))
         return chat
 
     def spoken_reply(self,message):

@@ -18,7 +18,7 @@ import urllib.request
 from zoneinfo import ZoneInfo
 from courswatch.conversation.persona import PERSONA_VERSION, PROMPT
 from courswatch.conversation.metrics import MeasuredResult, local_metrics, read_model_response, response_metrics
-from courswatch.conversation.models import (ENDPOINT, MODEL_CHOICES, resolve_profile,
+from courswatch.conversation.models import (CHAT_ENDPOINT, ENDPOINT, MODEL_CHOICES, MODEL_ENDPOINTS, resolve_profile,
                                              resolve_vision_profile, verified_vision)
 
 TZ = ZoneInfo('Europe/Bucharest')
@@ -51,6 +51,52 @@ class LunaError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.metrics = dict(metrics or {})
+
+
+def _chat_content(content):
+    if isinstance(content, str):
+        return content
+    result = []
+    for part in content:
+        if part['type'] == 'input_text':
+            result.append({'type': 'text', 'text': part['text']})
+        elif part['type'] == 'input_image':
+            result.append({'type': 'image_url', 'image_url': {'url': part['image_url'], 'detail': part['detail']}})
+        else:
+            raise LunaError('policy_mismatch')
+    return result
+
+
+def _wire_payload(payload, endpoint):
+    if endpoint == ENDPOINT:
+        return {**payload, 'stream': True}
+    if endpoint != CHAT_ENDPOINT:
+        raise LunaError('policy_mismatch')
+    schema = payload['text']['format']
+    messages = [{'role': 'system', 'content': payload['instructions']}]
+    messages.extend({'role': row['role'], 'content': _chat_content(row['content'])} for row in payload['input'])
+    return {'model': payload['model'], 'messages': messages,
+            'response_format': {'type': 'json_schema', 'json_schema': {
+                'name': schema['name'], 'strict': schema['strict'], 'schema': schema['schema']}},
+            'max_tokens': payload['max_output_tokens'], 'reasoning_effort': 'off',
+            'store': False, 'stream': True, 'stream_options': {'include_usage': True}}
+
+
+def _provider_error_fields(error):
+    # Error messages may quote private input. Keep only known technical identifiers.
+    if error.fp is None:
+        return {}
+    try:
+        body = json.loads(error.read(8192)).get('error')
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    allowed = {'code': ('invalid_request_error', 'invalid_value', 'unsupported_parameter',
+                         'unsupported_value', 'model_not_found', 'rate_limit_exceeded'),
+               'param': ('model', 'reasoning', 'reasoning.effort', 'reasoning_effort', 'store',
+                         'messages', 'response_format', 'max_tokens', 'stream_options')}
+    return {'provider_error_' + key: body[key] for key, values in allowed.items() if body.get(key) in values}
 
 
 def parse_decision(response,identifiers):
@@ -292,6 +338,7 @@ class LunaBrain:
         with self._profiles_lock:
             self.config = dict(settings)
             self.model = profile.requested_model_id
+            self.endpoint = profile.endpoint
             self.require_zdr = profile.require_zdr
 
     def capture_profile(self):
@@ -376,7 +423,7 @@ class LunaBrain:
                 'resolved_model_revision':revision if isinstance(revision,str) else None,
                 'profile_config_version':profile.config_version,'require_zdr':profile.require_zdr}
 
-    def publish(self,status,error_code=None,outcome=None,profile=None):
+    def publish(self,status,error_code=None,outcome=None,profile=None,provider_error=None):
         with self._status_lock:
             with self._profiles_lock:
                 active = resolve_profile({**self.config, 'model':self.model,
@@ -390,6 +437,8 @@ class LunaBrain:
                 report['last_call_profile'] = self.profile_metrics(profile)
             if error_code:
                 report['error_code'] = error_code
+            if provider_error:
+                report.update(provider_error)
             if outcome:
                 report['last_outcome'] = outcome
             directory = self.data / 'reports'
@@ -410,21 +459,28 @@ class LunaBrain:
 
     def request(self,payload,profile=None):
         profile = profile or self.capture_profile()
-        if payload.get('model') != profile.requested_model_id or profile.provider != 'commandcode' or profile.endpoint != ENDPOINT:
+        if (payload.get('model') != profile.requested_model_id or profile.provider != 'commandcode'
+                or MODEL_CHOICES.get(profile.profile_id, {}).get('model') != profile.requested_model_id
+                or profile.endpoint != MODEL_ENDPOINTS.get(profile.profile_id)):
             raise LunaError('policy_mismatch')
         headers = {'Authorization':'Bearer ' + self.key,'Content-Type':'application/json','User-Agent':'UPBCourseWatch/1.0'}
         if profile.require_zdr:
             headers['x-cmd-zdr'] = '1'
-        encoded = json.dumps({**payload,'stream':True},ensure_ascii=False).encode()
+        encoded = json.dumps(_wire_payload(payload, profile.endpoint),ensure_ascii=False).encode()
         if len(encoded) > profile.capabilities.max_payload_bytes:
             raise LunaError('payload_too_large')
         request = urllib.request.Request(profile.endpoint,data=encoded,method='POST',headers=headers)
         started = time.perf_counter()
         try:
             with urllib.request.urlopen(request,timeout=30) as response:
+                if profile.endpoint == CHAT_ENDPOINT:
+                    return read_model_response(response,started,chat=True)
                 return read_model_response(response,started)
         except urllib.error.HTTPError as error:
-            raise LunaError('http_' + str(error.code)) from None
+            try:
+                raise LunaError('http_' + str(error.code), _provider_error_fields(error)) from None
+            finally:
+                error.close()
         except (OSError,ValueError):
             raise LunaError('connection_failed') from None
 
@@ -435,12 +491,12 @@ class LunaBrain:
         self._check_circuit(profile)
         canonical = next((name for name,value in MODEL_CHOICES.items()
                           if value['model'] == profile.requested_model_id),None)
-        if (profile.provider != 'commandcode' or profile.endpoint != ENDPOINT
+        if (profile.provider != 'commandcode' or profile.endpoint != MODEL_ENDPOINTS.get(canonical)
                 or canonical is None or profile.profile_id != canonical
                 or not isinstance(profile.require_zdr,bool)
                 or (canonical == 'deepseek' and not profile.require_zdr)):
             raise LunaError('policy_mismatch')
-        encoded_size = len(json.dumps({**payload,'stream':True},ensure_ascii=False).encode())
+        encoded_size = len(json.dumps(_wire_payload(payload,profile.endpoint),ensure_ascii=False).encode())
         if encoded_size > profile.capabilities.max_payload_bytes:
             raise LunaError('payload_too_large')
         # Text bound is conservative. Visual allowance is separate from the URL
@@ -474,12 +530,14 @@ class LunaBrain:
         except LunaError as error:
             known_unbilled = error.code in ('http_400','http_401','http_402','http_403','http_404','http_413','http_422','http_429',
                                              'payload_too_large','policy_mismatch','capability_unavailable','invalid_media')
-            error.metrics = {**self.profile_metrics(profile), **accounting, 'api_ms':(time.perf_counter()-started)*1000,
+            provider_error = {key: value for key, value in error.metrics.items()
+                              if key in ('provider_error_code', 'provider_error_param')}
+            error.metrics = {**self.profile_metrics(profile), **provider_error, **accounting, 'api_ms':(time.perf_counter()-started)*1000,
                              'ttft_ms':None,'total_tokens':0 if known_unbilled else None,
                              'unknown_usage':not known_unbilled}
             self.budget.settle(reservation,status=error.code,known_usage=known_unbilled)
             self._record_failure(error.code)
-            self.publish('error',error.code,profile=profile)
+            self.publish('error',error.code,profile=profile,provider_error=provider_error)
             raise
         except Exception:
             self.budget.settle(reservation,status='unknown_error',known_usage=False)

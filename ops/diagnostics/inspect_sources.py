@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.async_api import async_playwright
 
 
 async def inspect(platform):
+    from playwright.async_api import async_playwright
+
     config = json.loads(Path('/etc/cours-watch/config.json').read_text())
     root = Path('/var/lib/cours-watch')
     async with async_playwright() as p:

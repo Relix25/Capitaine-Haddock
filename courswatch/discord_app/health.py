@@ -200,6 +200,8 @@ def build_status_snapshot(data_dir, config, bot_ready, latency, manual_running=F
                     luna['status'] = 'ready'
             except sqlite3.Error:
                 luna.update(status='unavailable',used_tokens=None)
+        if luna.get('status') not in ('ready', 'daily_limit', 'deferred_budget'):
+            issues.append('Conversations avec Haddock à vérifier')
     esn = {}
     if config.get('esn_file'):
         settings = read_json(Path(config['esn_file']))

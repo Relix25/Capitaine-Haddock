@@ -2,7 +2,6 @@
 """Receive a bot token privately over the user's SSH terminal; never log it."""
 import argparse
 import getpass
-import grp
 import json
 import os
 from pathlib import Path
@@ -25,6 +24,8 @@ def get(path, token):
 
 
 def save(path, data):
+    import grp
+
     pending = path.with_name(path.name + '.pending')
     pending.write_text(json.dumps(data,ensure_ascii=False,indent=2) + '\n')
     pending.chmod(0o640)
@@ -33,6 +34,8 @@ def save(path, data):
 
 
 def main():
+    import grp
+
     parser = argparse.ArgumentParser()
     parser.add_argument('application_id')
     parser.add_argument('--from-env',action='store_true')

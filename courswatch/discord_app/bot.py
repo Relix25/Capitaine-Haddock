@@ -158,10 +158,12 @@ class CourseBot(discord.Client):
         if self.luna:
             from courswatch.media.service import MediaService
             self.luna.media = MediaService(DATA, self.luna.journal,
+                retention_days=self.luna.journal.retention_days,
                 describer=self.luna.brain.describe_media, profile_resolver=self.luna.brain.vision_profile,
                 authorize=self.media_occurrence_allowed, refresh_source=self.refresh_media_source,
                 authorize_dispatch=self.media_transmission_allowed)
         self.history_task = None
+        self.history_retry_needed = False
         self.retention_task = None
         self.status_lock = threading.RLock()
         self.child = None
@@ -493,6 +495,7 @@ class CourseBot(discord.Client):
         """Ingest one complete Discord page silently and report continuation."""
         settings = configuration()['discord'].get('luna', {}).get('memory', {})
         if not settings.get('backfill_enabled', True):
+            self.history_retry_needed = False
             return False
         scope = self.conversation_scope()
         if str(channel.id) != scope.channel_id:
@@ -523,6 +526,7 @@ class CourseBot(discord.Client):
             if guild and guild.me:
                 permissions = channel.permissions_for(guild.me)
                 if not (permissions.view_channel and permissions.read_message_history):
+                    self.history_retry_needed = True
                     self.write_status(conversation_backfill={'status':'unavailable','reason':'history_permission'})
                     return False
             async for message in channel.history(limit=limit, after=discord.Object(id=after_id),
@@ -575,10 +579,12 @@ class CourseBot(discord.Client):
             else:
                 journal.checkpoint(scope, cursor='')
             journal.purge()
+            self.history_retry_needed = False
             self.write_status(conversation_backfill={'status':'partial' if more else 'complete',
                 'messages_seen':len(seen),'start_utc':utc_iso(start),'end_utc':utc_iso(end),'silent':True})
             return more
         except (discord.HTTPException, OSError, ValueError, sqlite3.Error):
+            self.history_retry_needed = True
             self.write_status(conversation_backfill={'status':'unavailable','reason':'history_fetch','silent':True})
             return False
 
@@ -595,7 +601,7 @@ class CourseBot(discord.Client):
             if self.history_task is None or self.history_task.done():
                 scope = self.conversation_scope()
                 channel = self.get_channel(int(scope.channel_id))
-                if channel and self.luna.journal.coverage(scope).get('cursor'):
+                if channel and (self.history_retry_needed or self.luna.journal.coverage(scope).get('cursor')):
                     self.history_task = asyncio.create_task(self.resume_conversation_backfill(channel))
 
     async def on_raw_message_edit(self, payload):

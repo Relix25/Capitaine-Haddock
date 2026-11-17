@@ -11,7 +11,6 @@ import subprocess
 import urllib.parse
 import urllib.request
 
-import imageio_ffmpeg
 
 SAMPLES = [
     ('abordage','Abordage','/dessins-animes/tintin-et-le-lac-aux-requins/434864'),
@@ -49,6 +48,8 @@ def download(url,limit,referrer=None):
 
 
 def main():
+    import imageio_ffmpeg
+
     ROOT.mkdir(mode=0o700,exist_ok=True)
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     output = []

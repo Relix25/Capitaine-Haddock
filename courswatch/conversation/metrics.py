@@ -31,8 +31,7 @@ def _events(lines):
             if parts:
                 data = '\n'.join(parts)
                 parts, size = [], 0
-                if data != '[DONE]':
-                    yield json.loads(data)
+                yield data if data == '[DONE]' else json.loads(data)
             continue
         if line.startswith('data:'):
             data = line[5:].lstrip(' ')
@@ -40,11 +39,53 @@ def _events(lines):
             if size > MAX_RESPONSE_BYTES:
                 raise ValueError('Oversized model stream event')
             parts.append(data)
-    if parts and '\n'.join(parts) != '[DONE]':
-        yield json.loads('\n'.join(parts))
+    if parts:
+        data = '\n'.join(parts)
+        yield data if data == '[DONE]' else json.loads(data)
 
 
-def read_model_response(stream, started, clock=time.perf_counter, *,
+def _chat_response(model, usage, content, reason, refusal):
+    usage = usage or {}
+    output = {'type': 'refusal'} if refusal or reason == 'content_filter' else {
+        'type': 'output_text', 'text': content}
+    status = 'completed' if reason in (None, 'stop', 'content_filter') else 'incomplete'
+    return {'model': model, 'status': status,
+            'incomplete_details': {'reason': 'max_output_tokens' if reason == 'length' else reason},
+            'output': [{'type': 'message', 'content': [output]}],
+            'usage': {'input_tokens': usage.get('prompt_tokens'), 'output_tokens': usage.get('completion_tokens'),
+                      'total_tokens': usage.get('total_tokens'), 'input_tokens_details': usage.get('prompt_tokens_details'),
+                      'output_tokens_details': usage.get('completion_tokens_details')}}
+
+
+def _read_chat_events(events, started, clock):
+    pieces = []
+    first_text = model = usage = finish = None
+    refusal = False
+    for event in events:
+        if event == '[DONE]':
+            return MeasuredResult(_chat_response(model, usage, ''.join(pieces), finish, refusal), {
+                'ttft_ms': None if first_text is None else (first_text - started) * 1000,
+                'api_ms': (clock() - started) * 1000})
+        if not isinstance(event, dict) or event.get('error'):
+            raise ValueError('Chat completion stream failed')
+        model = event.get('model') or model
+        usage = event.get('usage') or usage
+        for choice in event.get('choices', []):
+            if choice.get('index', 0) != 0:
+                continue
+            delta = choice.get('delta') or {}
+            text = delta.get('content') or ''
+            if not isinstance(text, str):
+                raise ValueError('Invalid chat completion delta')
+            pieces.append(text)
+            if first_text is None and text.strip():
+                first_text = clock()
+            refusal = refusal or bool(delta.get('refusal'))
+            finish = choice.get('finish_reason') or finish
+    raise ValueError('Chat stream ended without terminal response')
+
+
+def read_model_response(stream, started, clock=time.perf_counter, *, chat=False,
                         deadline_seconds=30, deadline_clock=time.monotonic):
     """Time the first nonempty text delta, never headers or placeholder events."""
     deadline = deadline_clock() + deadline_seconds
@@ -66,6 +107,13 @@ def read_model_response(stream, started, clock=time.perf_counter, *,
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ValueError('Oversized model response')
         value = json.loads(raw)
+        if chat:
+            choices = value.get('choices') if isinstance(value, dict) else None
+            if not choices or value.get('error'):
+                raise ValueError('Invalid chat completion')
+            message = choices[0]['message']
+            value = _chat_response(value.get('model'), value.get('usage'), message.get('content') or '',
+                                   choices[0].get('finish_reason'), message.get('refusal'))
         return MeasuredResult(value, {'ttft_ms': None, 'api_ms': (clock() - started) * 1000})
 
     def remaining_lines():
@@ -81,8 +129,13 @@ def read_model_response(stream, started, clock=time.perf_counter, *,
             yield raw
 
     first_text, pieces, text_size = None, [], 0
-    for event in _events(itertools.chain([first_line], remaining_lines())):
+    events = _events(itertools.chain([first_line], remaining_lines()))
+    if chat:
+        return _read_chat_events(events, started, clock)
+    for event in events:
         check_deadline()
+        if event == '[DONE]':
+            break
         kind = event.get('type')
         if kind == 'response.output_text.delta':
             delta = event.get('delta', '')

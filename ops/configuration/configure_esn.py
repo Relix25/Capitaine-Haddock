@@ -1,6 +1,5 @@
 """Discover/configure the ESN notification role without exposing credentials."""
 import argparse
-import grp
 import json
 import os
 from pathlib import Path
@@ -13,6 +12,8 @@ from courswatch.collectors.esn import PROFILE,save_report
 
 
 def save_config(path,value):
+    import grp
+
     temporary=path.with_suffix('.pending')
     temporary.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n')
     temporary.chmod(0o640); os.chown(temporary,0,grp.getgrnam('courswatch').gr_gid)

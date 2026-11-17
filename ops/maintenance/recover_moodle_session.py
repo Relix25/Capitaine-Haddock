@@ -3,11 +3,12 @@ import asyncio
 import json
 from pathlib import Path
 
-from playwright.async_api import async_playwright
 from courswatch.runtime import moodle, save_moodle_cookies
 
 
 async def main():
+    from playwright.async_api import async_playwright
+
     root = Path('/var/lib/cours-watch')
     config = json.loads(Path('/etc/cours-watch/config.json').read_text())
     async with async_playwright() as p:

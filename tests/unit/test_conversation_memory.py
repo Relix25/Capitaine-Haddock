@@ -1,3 +1,4 @@
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +36,24 @@ class JournalTests(unittest.TestCase):
         self.assertIsNone(self.journal.ingest(original))
         self.assertFalse(self.journal.observations(self.scope, 'one'))
 
+    def test_live_create_after_backfill_is_admitted_once_without_new_revision(self):
+        from courswatch.conversation.coordinator import Coordinator
+
+        coordinator = Coordinator()
+        request = self.message(text='Haddock, bonjour !')
+        historical = self.journal.ingest(replace(request, event_kind='rest'), backfill=True)
+        self.assertTrue(coordinator.observe(historical))
+        live = self.journal.ingest(request)
+        self.assertEqual(live.revision, historical.revision)
+        self.assertTrue(coordinator.observe(live))
+        turn = coordinator.enqueue(live, direct=True)
+        self.assertEqual(turn.reply_target_id, request.message_id)
+        reopened = Journal(self.journal.path, now=lambda: self.moment)
+        self.assertIsNone(reopened.ingest(request))
+        edited = replace(request, text='Question modifiée', event_kind='rest')
+        self.assertEqual(reopened.ingest(edited, backfill=True).revision, 2)
+        self.assertIsNone(reopened.ingest(replace(edited, event_kind='create')))
+
     def test_page_reconciles_only_snowflakes_it_covered_at_the_shared_timestamp(self):
         for identity in ('10', '11', '12'):
             self.journal.ingest(self.message(identity))
@@ -69,7 +88,7 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.journal.active(self.scope, 'one').text, edited.text)
         self.assertFalse(self.journal.search(self.scope, 'vendredi'))
         self.assertTrue(self.journal.search(self.scope, 'lundi'))
-        with sqlite3.connect(self.journal.path) as db:
+        with closing(sqlite3.connect(self.journal.path)) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM message_versions').fetchone()[0], 2)
 
     def test_delete_wipes_versions_and_observations_then_blocks_resurrection(self):
@@ -85,7 +104,7 @@ class JournalTests(unittest.TestCase):
         self.assertFalse(self.journal.search(self.scope, 'voilier'))
         self.assertFalse(self.journal.save_observation(self.scope, 'one', 1, 'media-a', {'description': 'late'}))
         self.assertIsNone(self.journal.ingest(message, backfill=True))
-        with sqlite3.connect(self.journal.path) as db:
+        with closing(sqlite3.connect(self.journal.path)) as db, db:
             self.assertFalse(db.execute('SELECT payload FROM message_versions').fetchall())
             self.assertNotIn('proposition', db.execute('SELECT payload FROM messages').fetchone()[0])
 
@@ -132,7 +151,7 @@ class JournalTests(unittest.TestCase):
         self.assertFalse(coverage['complete'])
         self.assertEqual(coverage['gaps'][0]['reason'], 'page_limit')
         self.assertFalse(coverage['offline_mutations_complete'])
-        with sqlite3.connect(self.journal.path) as db:
+        with closing(sqlite3.connect(self.journal.path)) as db, db:
             self.assertFalse(db.execute('SELECT * FROM outbound_responses').fetchall())
 
     def test_complete_scan_reconciles_missing_messages_but_protects_live_race(self):
@@ -160,7 +179,7 @@ class JournalTests(unittest.TestCase):
         self.journal.ingest(self.message())
         backup = self.journal.backup_to(self.root / 'rollback-copy.db')
         Journal(backup, now=lambda: self.moment)
-        with sqlite3.connect(backup) as db:
+        with closing(sqlite3.connect(backup)) as db, db:
             db.execute("INSERT INTO schema_migrations VALUES('conversation',999,'future')")
         with self.assertRaises(RuntimeError):
             Journal(backup, now=lambda: self.moment)
@@ -222,7 +241,7 @@ class JournalTests(unittest.TestCase):
         self.journal.ingest(self.message())
         self.journal.checkpoint(self.scope, 'legacy', first_at=self.moment - timedelta(days=7), last_at=self.moment)
         copy = self.journal.backup_to(self.root / 'legacy-copy.db')
-        with sqlite3.connect(copy) as db:
+        with closing(sqlite3.connect(copy)) as db, db:
             db.execute('DROP TABLE coverage_windows')
             db.execute("DELETE FROM schema_migrations WHERE component='conversation' AND version=2")
             db.execute('UPDATE ingestion_cursors SET complete=1')

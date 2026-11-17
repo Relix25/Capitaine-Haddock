@@ -5,11 +5,12 @@ import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
-from playwright.async_api import async_playwright
 from courswatch.runtime import moodle_cookies
 
 
 async def probe(resource_id):
+    from playwright.async_api import async_playwright
+
     async with async_playwright() as p:
         request = await p.request.new_context(storage_state={'cookies': moodle_cookies(Path('/var/lib/cours-watch')), 'origins': []})
         try:

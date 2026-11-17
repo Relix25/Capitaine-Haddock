@@ -136,7 +136,8 @@ class MediaService:
     def __init__(self, data, journal, describer=None, profile_resolver=None, *,
                  fetcher=fetch_media, decoder=decode_media, clock=time.monotonic,
                  now=time.time, limits=None, trusted_test=False, queue_size=64,
-                 max_media_per_message=4, refresh_source=None, authorize=None, authorize_dispatch=None):
+                 max_media_per_message=4, refresh_source=None, authorize=None, authorize_dispatch=None,
+                 retention_days=90):
         self.journal, self.describer, self.profile_resolver = journal, describer, profile_resolver
         self.fetcher, self.decoder, self.clock = fetcher, decoder, clock
         self.now = now
@@ -147,7 +148,7 @@ class MediaService:
         self.refresh_source = refresh_source
         self.authorize = authorize or (lambda envelope: True)
         self.authorize_dispatch = authorize_dispatch
-        self.cache = MediaCache(Path(data) / 'media-cache.db', now=now)
+        self.cache = MediaCache(Path(data) / 'media-cache.db', now=now, retention_days=retention_days)
         self.queue = asyncio.Queue(maxsize=queue_size)
         self.max_media = max_media_per_message
         self.background_task = None

@@ -7,6 +7,8 @@ import tempfile
 from courswatch.conversation.contracts import ModelCapabilities, ModelProfile
 
 ENDPOINT = 'https://api.commandcode.ai/provider/v1/responses'
+CHAT_ENDPOINT = 'https://api.commandcode.ai/provider/v1/chat/completions'
+MODEL_ENDPOINTS = {'hy4': CHAT_ENDPOINT, 'deepseek': ENDPOINT}
 
 MODEL_CHOICES = {
     'hy4': {'model': 'tencent/hy4-flash', 'require_zdr': False},
@@ -52,7 +54,7 @@ def resolve_profile(settings):
     if verified:
         if (not evidence.strip() or evidence.strip() == DECLARED_VISION
                 or record.get('provider') != 'commandcode'
-                or record.get('endpoint') != ENDPOINT or record.get('requested_model_id') != model
+                or record.get('endpoint') != MODEL_ENDPOINTS[profile_id] or record.get('requested_model_id') != model
                 or record.get('require_zdr') is not require_zdr
                 or any(values[name] != 'verified' for name in
                        ('image_input', 'structured_output', 'api_image_input', 'api_structured_output'))):
@@ -64,7 +66,7 @@ def resolve_profile(settings):
     maximum = record.get('max_payload_bytes', 8 * 1024 * 1024)
     if not isinstance(maximum, int) or isinstance(maximum, bool) or not 1024 <= maximum <= 32 * 1024 * 1024:
         raise ValueError('Invalid visual payload limit')
-    return ModelProfile(profile_id, 'commandcode', ENDPOINT, model, require_zdr,
+    return ModelProfile(profile_id, 'commandcode', MODEL_ENDPOINTS[profile_id], model, require_zdr,
                         str(settings.get('profile_config_version', '1')),
                         ModelCapabilities(**values, verified_real=verified, evidence=evidence,
                                           formats=tuple(formats), max_payload_bytes=maximum))

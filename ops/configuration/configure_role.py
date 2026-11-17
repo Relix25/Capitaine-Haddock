@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Configure the authorized Discord role and send one explicit test without logging secrets."""
 import argparse
-import grp
 import json
 import os
 from pathlib import Path
@@ -11,6 +10,8 @@ from courswatch.runtime import discord_request, format_notification, stamp
 
 
 def save(path, data):
+    import grp
+
     pending = path.with_name(path.name + '.pending')
     pending.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
     os.chown(pending, 0, grp.getgrnam('courswatch').gr_gid)

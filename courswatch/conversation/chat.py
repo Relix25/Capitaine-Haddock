@@ -27,6 +27,7 @@ from courswatch.conversation.brain import (LunaBrain, ChatMemory, ChatCadence, a
 from courswatch.conversation.contracts import MessageEnvelope, Scope, utc_iso, Evidence, EvidenceBundle, RetrievalRequest
 from courswatch.conversation.coordinator import Coordinator, QueueFull
 from courswatch.conversation.participation import decide as participation
+from courswatch.conversation.decision import participation_vote
 
 _VISUAL_REQUEST = re.compile(r'\b(?:images?|photos?|gif|emojis?|animation|ocr|m[ée]dia|d[ée]cri[st]?|d[ée]crire|d[ée]cris|vois|visible|lisible|panneau)\b', re.I)
 _EXPLICIT_VISUAL = re.compile(r'\b(?:d[ée]cris|d[ée]crire|que montre|que voit|lis le texte|texte visible|ocr)\b', re.I)
@@ -65,6 +66,9 @@ class LunaChat:
         self._messages,self._ingest_ms,self._evidence = {},{},{}
         self._invalidated = {}
         self._turn_profiles = {}
+        self._last_exchange = None
+        self.participation_vote = participation_vote
+        self.decision_retry_after = 0
         self._warm_scopes = set()
         self._wake = asyncio.Event()
         self.task = None
@@ -160,7 +164,11 @@ class LunaChat:
              or (self.coordinator.active(envelope.scope,envelope.reply_to_message_id) is not None
                  and self.coordinator.active(envelope.scope,envelope.reply_to_message_id).is_bot)))
         direct = addressed(envelope.text,mentioned or bot_id in envelope.mentioned_user_ids,reply_bot)
-        policy = participation(envelope,direct=direct,ambient_allowed=self.cadence.ambient_allowed(),
+        prior = self._last_exchange
+        followup = bool(not direct and prior and prior[:2] == (envelope.scope, envelope.author_id)
+                        and self.clock() < prior[2] and not envelope.mentioned_user_ids
+                        and not envelope.reply_to_message_id)
+        policy = participation(envelope,direct=direct,ambient_allowed=followup or self.cadence.ambient_allowed(),
                                mode=self.settings.get('participation_mode','selective'))
         self._status(last_chat_decision={'decision':policy.decision,'reason_code':policy.reason_code,'checked_utc':stamp()})
         if envelope.ingestion_mode != 'live' or envelope.is_bot:
@@ -183,6 +191,9 @@ class LunaChat:
                 self._overflow_task=asyncio.create_task(self._overload_reply(message))
             return replace(policy,decision='silence',reason_code='queue_full')
         self._wake.set()
+        if followup and turn is not None and not turn.direct and policy.decision != 'silence':
+            turn.followup_context = prior[3]
+            turn.ready_at = min(turn.ready_at, self.clock()+0.2)
         if turn is not None and (self.task is None or self.task.done()):
             self.task=asyncio.create_task(self.run())
         return policy
@@ -259,8 +270,10 @@ class LunaChat:
             self._local_answers[snapshot.turn_id]=command_help
             return command_help
         from courswatch.knowledge.service import is_own_media_request
+        followup = getattr(self.knowledge, 'followup_question', None)
+        question = followup(snapshot) if callable(followup) else snapshot.goal
         course_classifier = getattr(self.knowledge, 'is_course_question', None)
-        course_question = bool(callable(course_classifier) and course_classifier(snapshot.goal, snapshot.scope))
+        course_question = bool(callable(course_classifier) and course_classifier(question, snapshot.scope))
         own_media = is_own_media_request(snapshot.goal)
         if own_media and not course_question and len(snapshot.requester_ids) != 1:
             result = 'De quel message parles-tu ? Réponds directement au message qui contient le média.'
@@ -349,7 +362,7 @@ class LunaChat:
         if self.knowledge is not False:
             try:
                 if course_question or own_media:
-                    request = RetrievalRequest(snapshot.scope, snapshot.goal,
+                    request = RetrievalRequest(snapshot.scope, question,
                         intent='course' if course_question else 'conversation',
                         author_id=None if course_question else snapshot.requester_ids[0])
                     bundle = await asyncio.to_thread(self.knowledge.query, request)
@@ -549,7 +562,7 @@ class LunaChat:
                 if delay:
                     await self._wait(delay)
                     continue
-                if not turn.direct and not self.cadence.ambient_allowed():
+                if not turn.direct and not turn.followup_context and not self.cadence.ambient_allowed():
                     self.coordinator.finish(turn,'silence')
                     continue
                 message=self._messages.get((turn.scope.key,turn.reply_target_id))
@@ -576,8 +589,43 @@ class LunaChat:
                             if turn.turn_id not in self._turn_profiles:
                                 self._turn_profiles[turn.turn_id]=capture() if callable(capture) else None
                             profile = self._turn_profiles[turn.turn_id]
+                            if not turn.direct:
+                                if self.clock() < self.decision_retry_after:
+                                    self.coordinator.finish(turn,'silence')
+                                    continue
+                                loop = asyncio.get_running_loop()
+                                async def decision_allowed():
+                                    return not self.coordinator.pending_direct and await self._valid(snapshot,message,publishing=False)
+                                def check_decision():
+                                    return asyncio.run_coroutine_threadsafe(decision_allowed(),loop).result()
+                                worker = asyncio.create_task(asyncio.to_thread(self.participation_vote,
+                                    self.brain,snapshot,bool(turn.followup_context),profile,check_decision))
+                                try:
+                                    respond,judge,call_id = await asyncio.shield(worker)
+                                except asyncio.CancelledError:
+                                    await asyncio.gather(worker,return_exceptions=True)
+                                    raise
+                                except (LunaError,BudgetExhausted) as error:
+                                    code = getattr(error,'code','budget_exhausted')
+                                    if code == 'request_invalidated':
+                                        self.coordinator.retry(turn)
+                                    else:
+                                        self.decision_retry_after = self.clock()+30
+                                        self.coordinator.finish(turn,'silence')
+                                    self._status(last_participation={'error':code,'checked_utc':stamp()})
+                                    continue
+                                self._status(last_participation={'respond':respond,'model':judge,'call_id':call_id,
+                                                                'checked_utc':stamp()})
+                                if not respond or self.coordinator.pending_direct:
+                                    self.coordinator.finish(turn,'silence')
+                                    continue
+                                if not self._snapshot_current(snapshot,check_pending=True):
+                                    self.coordinator.retry(turn)
+                                    continue
+                                if turn.followup_context:
+                                    turn.direct = True
                             started=self.clock()
-                            facts=await self.facts(snapshot,profile=profile) if turn.direct else ''
+                            facts=await self.facts(snapshot,profile=profile)
                             timing['retrieval_ms']=round(max(0,self.clock()-started)*1000,1)
                             timing.update(self._media_timings.pop(turn.turn_id,{}))
                             bundle=self._evidence.get(turn.turn_id)
@@ -614,7 +662,7 @@ class LunaChat:
                             timing['discarded_request']=True
                             timing['requeued_request']=self.coordinator.retry(turn)
                             continue
-                        response_problem=error.code in RESPONSE_ERRORS or error.code in ('capability_unavailable','input_limit','invalid_media','policy_mismatch','payload_too_large','http_400','http_422')
+                        response_problem=error.code in RESPONSE_ERRORS and error.code != 'policy_mismatch'
                         if not response_problem and error.code not in ('circuit_open','service_circuit_open'):
                             self.retry_after=self.clock()+60
                         self.bot.write_status(last_luna_error={'code':error.code,'checked_utc':stamp(),
@@ -663,6 +711,10 @@ class LunaChat:
                         if self.journal is not False:
                             self.journal.mark_outbound(dedupe,'sent' if receipt is not None else 'uncertain',str(receipt) if receipt is not None else None)
                         changed_during_send=not self.coordinator.valid(snapshot)
+                        if (receipt is not None and not changed_during_send and
+                                (conversation or turn.turn_id in self._local_answers)):
+                            self._last_exchange = (turn.scope,str(message.author.id),self.clock()+120,
+                                                   (turn.reply_target_id,str(receipt)))
                         if receipt is not None and changed_during_send:
                             self.bot.write_status(last_chat_publication={'state':'changed_during_send','reply_id':str(receipt),'checked_utc':stamp()})
                         self.coordinator.finish(turn,'completed' if receipt is not None else 'uncertain',receipt)

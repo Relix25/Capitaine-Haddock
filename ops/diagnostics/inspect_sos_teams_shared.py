@@ -1,7 +1,6 @@
 """Read the SOS General shared-files tab; no uploads, forms or content changes."""
 import asyncio
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -10,6 +9,8 @@ from urllib.parse import urlsplit
 
 
 async def main():
+    import fcntl
+
     lock=Path('/var/lib/cours-watch/browser.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     config=json.loads(Path('/etc/cours-watch/config.json').read_text())

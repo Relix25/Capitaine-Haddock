@@ -1,7 +1,6 @@
 """Inspect permissions or upload the four user-provided Haddock images to Discord."""
 import argparse
 import base64
-import grp
 import hashlib
 import json
 import os
@@ -17,6 +16,8 @@ FILES = {'success':'haddock_joie_depot','project':'haddock_longue_vue_projet',
 
 
 def main():
+    import grp
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--check',action='store_true')
     parser.add_argument('--scope',choices=['guild','application'],default='guild')

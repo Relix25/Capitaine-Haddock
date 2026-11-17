@@ -6,7 +6,7 @@ Connections belong to one operation; none are shared across worker threads.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -190,6 +190,25 @@ class Journal:
                     return None
                 old = _envelope(row['payload'])
                 if _semantic(old) == _semantic(envelope):
+                    # A silent history read may win the race with the Gateway.
+                    # Admit the first live create exactly once without invalidating
+                    # evidence, media observations, or the content revision.
+                    if (old.ingestion_mode == 'backfill' and envelope.ingestion_mode == 'live'
+                            and envelope.event_kind == 'create' and not old.is_bot):
+                        live_seen = db.execute(
+                            """SELECT 1 FROM message_versions WHERE scope=? AND message_id=?
+                               AND json_extract(payload,'$.ingestion_mode')='live'
+                               AND json_extract(payload,'$.event_kind')='create' LIMIT 1""",
+                            (scope, identifier)).fetchone()
+                        if live_seen is None:
+                            promoted = replace(envelope, revision=old.revision)
+                            payload = _payload(promoted)
+                            db.execute('UPDATE messages SET payload=? WHERE scope=? AND message_id=?',
+                                       (payload, scope, identifier))
+                            db.execute('UPDATE message_versions SET payload=? WHERE scope=? AND message_id=? AND revision=?',
+                                       (payload, scope, identifier, old.revision))
+                            db.commit()
+                            return promoted
                     return None
                 if state_at == row['state_at']:
                     if envelope.event_kind != 'rest' or utc_iso(envelope.received_at) < row['observed_at']:
@@ -542,7 +561,7 @@ class Journal:
             raise ValueError('Backup must use another path')
         destination.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as source:
-            with sqlite3.connect(destination) as target:
+            with closing(sqlite3.connect(destination)) as target:
                 source.backup(target)
         destination.chmod(0o600)
         return destination

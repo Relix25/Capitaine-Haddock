@@ -194,6 +194,22 @@ class LunaTests(unittest.TestCase):
         self.assertEqual(snapshot['calls'],2)
         self.assertEqual(snapshot['remaining_tokens'],9_999_760)
 
+    def test_rejected_hy4_request_records_parameter_without_provider_message(self):
+        brain = LunaBrain(self.root, {'provider':'commandcode', 'model':'tencent/hy4-flash'}, api_key='fake')
+        body = json.dumps({'error':{'code':'unsupported_value', 'param':'reasoning_effort',
+                                    'message':'PRIVATE_PROMPT_SENTINEL'}}).encode()
+        error = urllib.error.HTTPError(brain.endpoint, 400, 'Bad request', {}, io.BytesIO(body))
+        with patch('courswatch.conversation.brain.urllib.request.urlopen', side_effect=error) as send:
+            with self.assertRaises(LunaError) as failed:
+                brain.decide([], True)
+        send.assert_called_once()
+        self.assertEqual(failed.exception.code, 'http_400')
+        self.assertEqual(failed.exception.metrics['provider_error_param'], 'reasoning_effort')
+        report = (self.root/'reports/luna-status.json').read_text()
+        self.assertEqual(json.loads(report)['provider_error_code'], 'unsupported_value')
+        self.assertNotIn('PRIVATE_PROMPT_SENTINEL', report)
+        self.assertEqual(brain.budget.snapshot()['used_tokens'], 0)
+
     def test_commandcode_refuses_zdr_without_retry_or_provider_fallback(self):
         brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake')
         error = urllib.error.HTTPError(brain.endpoint,422,'synthetic',{},None)

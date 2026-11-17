@@ -59,6 +59,7 @@ class Turn:
     gateway_ms: float | None = None
     fragmenting: bool = False
     clarification_ids: list[str] = field(default_factory=list)
+    followup_context: tuple[str, ...] = ()
 
 
 class Coordinator:
@@ -88,6 +89,10 @@ class Coordinator:
                 return False
             if message.revision <= old.revision:
                 if message.text == old.text and message.media == old.media:
+                    if (message.revision == old.revision and old.ingestion_mode == 'backfill'
+                            and message.ingestion_mode == 'live' and message.event_kind == 'create'):
+                        self.messages[key] = message
+                        return True
                     return False
                 message = replace(message, revision=old.revision + 1)
         self.messages[key] = message
@@ -248,6 +253,8 @@ class Coordinator:
     def freeze(self, turn):
         messages = [self.active(turn.scope, identity) for identity in turn.message_ids]
         messages = [message for message in messages if message is not None]
+        prior = [self.active(turn.scope, identity) for identity in turn.followup_context]
+        messages = [message for message in prior if message and not message.deleted and message not in messages] + messages
         # Include explicit ancestors, never unrelated messages from another topic.
         for message in tuple(messages):
             identity = message.reply_to_message_id

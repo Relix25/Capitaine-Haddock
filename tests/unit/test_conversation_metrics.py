@@ -11,6 +11,35 @@ def stream(*events):
 
 
 class MetricsTests(unittest.TestCase):
+    def test_chat_stream_requires_terminal_and_reads_late_usage(self):
+        source = stream({'model':'hy4', 'choices':[{'delta':{'role':'assistant'}}]},
+                        {'choices':[{'delta':{'reasoning_content':'hidden'}}]},
+                        {'choices':[{'delta':{'content':'Bonjour'}}]},
+                        {'choices':[{'delta':{},'finish_reason':'stop'}]},
+                        {'choices':[], 'usage':{'prompt_tokens':10, 'completion_tokens':8, 'total_tokens':18,
+                            'prompt_tokens_details':{'cached_tokens':3}, 'completion_tokens_details':{'reasoning_tokens':2}}})
+        raw = source.getvalue()
+        ticks = iter((1.25,2.0))
+        response = read_model_response(io.BytesIO(raw + b'data: [DONE]\n\n'), 1,
+                                       clock=lambda: next(ticks), chat=True)
+        self.assertEqual(response['output'][0]['content'][0]['text'], 'Bonjour')
+        self.assertEqual(response['model'], 'hy4')
+        metrics = response_metrics(response, 'hy4', 999)
+        self.assertEqual((metrics['ttft_ms'],metrics['total_tokens'],metrics['cached_input_tokens']), (250,18,3))
+        self.assertAlmostEqual(metrics['output_tps'], 5 / 0.75)
+        with self.assertRaisesRegex(ValueError, 'without terminal'):
+            read_model_response(io.BytesIO(raw), 1, chat=True)
+
+    def test_chat_terminal_can_report_refusal_or_output_limit(self):
+        for finish in ('length','content_filter'):
+            source = stream({'choices':[{'delta':{},'finish_reason':finish}]})
+            result = read_model_response(io.BytesIO(source.getvalue()+b'data: [DONE]\n\n'), 0, chat=True)
+            if finish == 'length':
+                self.assertEqual(result['status'], 'incomplete')
+                self.assertEqual(result['incomplete_details']['reason'], 'max_output_tokens')
+            else:
+                self.assertEqual(result['output'][0]['content'][0]['type'],'refusal')
+
     def test_placeholder_stream_has_overall_deadline_with_controlled_clock(self):
         ticks=iter((0,0,31))
         source=stream({'type':'response.created'})

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Interactive local setup; webhook secret is hidden and never printed."""
 import getpass
-import grp
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,8 @@ import urllib.request
 
 
 def save_private(path, values):
+    import grp
+
     pending=path.with_name(path.name+'.pending')
     pending.write_text(json.dumps(values,ensure_ascii=False,indent=2)+'\n')
     os.chown(pending,0,grp.getgrnam('courswatch').gr_gid)

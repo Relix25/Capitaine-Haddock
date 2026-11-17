@@ -28,7 +28,10 @@ _STOP = frozenset('le la les de des du un une au aux et est ce c ça c’est ces
                   'quel quels discussion discussions semaine dernière derniere souviens '
                   'rappelles rappelle souvenir il y avait avais dit envoyé envoye image gif qu que qui par sur haddock capitaine'.split())
 _HISTORY = re.compile(r'\b(souviens|souvenir|rappelles|discussion|avions|avait|semaine derni[eè]re|il y a une semaine)\b', re.I)
-_DATE = re.compile(r'\b(quand|date|dates|[eé]ch[eé]ance|remise|rendu|d[eé]p[oô]t|oral|pr[eé]sentation|deadline)\b', re.I)
+_DATE = re.compile(r'\b(quand|dates?|[eé]ch[eé]ances?|remises?|rendus?|d[eé]p[oô]ts?|oral|oraux|pr[eé]sentations?|deadlines?)\b', re.I)
+_UPCOMING = re.compile(r'\b(prochain(?:e?s?)|[aà] venir)\b', re.I)
+_DEADLINE = re.compile(r'\b([eé]ch[eé]ances?|deadlines?)\b', re.I)
+_COURSE_FOLLOWUP = re.compile(r'^(?:\[mention\]\W*|(?:capitaine\s+)?haddock\W+)?et\s+(?:pour\s+)?([\w -]+?)\s*\?*$', re.I)
 _MEDIA = re.compile(r'\b(images?|photos?|gifs?|emojis?|m[ée]dias?|animations?|anim[eé]s?)\b', re.I)
 _COURSE_INTENT = re.compile(r'\b(consignes?|annonces?|pdf|projets?|documents?|rendre|calendrier)\b', re.I)
 _VISUAL_CONTEXT = re.compile(
@@ -97,6 +100,10 @@ def _requested_course_ids(question, settings, allowed):
 
 def _requested_years(text):
     return set(re.findall(r'(?<!\d)(?:19|20)\d{2}(?!\d)', str(text)))
+
+
+def _upcoming_deadlines(text):
+    return bool(_UPCOMING.search(text) and (_DATE.search(text) or re.search(r'\brendre\b', text, re.I)))
 
 
 def _year_matches(question, values, explicit=None):
@@ -189,7 +196,25 @@ class KnowledgeService:
     def is_course_question(self, question, scope=None):
         settings = self._settings()
         allowed = self._sources(scope) if scope is not None else ()
-        return bool(_requested_course_ids(question, settings, allowed))
+        return bool(_requested_course_ids(question, settings, allowed) or (
+            _DEADLINE.search(question) and not (_MEDIA.search(question) or _HISTORY.search(question))))
+
+    def followup_question(self, snapshot):
+        """Carry a verified participant's calendar request over to the new course."""
+        match = _COURSE_FOLLOWUP.fullmatch(snapshot.goal.strip())
+        if not match or len(snapshot.requester_ids) != 1:
+            return snapshot.goal
+        course = match.group(1).strip()
+        aliases = {str(value).casefold() for item in self._settings().get('courses', ())
+                   for value in (item['id'], item.get('label', ''))}
+        if course.casefold() not in aliases:
+            return snapshot.goal
+        previous = next((message for message in reversed(snapshot.messages)
+                         if message.message_id not in snapshot.trigger_message_ids and not message.deleted
+                         and not message.is_bot and message.author_id == snapshot.requester_ids[0]), None)
+        if previous and _upcoming_deadlines(previous.text):
+            return 'Quelles sont les prochaines échéances pour ' + course + ' ?'
+        return snapshot.goal
 
     def _now(self, value=None):
         moment = value or self.clock()
@@ -248,17 +273,21 @@ class KnowledgeService:
         except (OSError, ValueError):
             return (), '', ('Configuration des tâches indisponible.',)
         terms = _tokens(question)
+        upcoming = task_ids is None and _upcoming_deadlines(question)
         tasks = [task for task in reminders.get('tasks', [])
-                 if task.get('reference', {}).get('source') in allowed]
+                 if task.get('reference', {}).get('source') in allowed
+                 and not (upcoming and task.get('completed'))]
         if task_ids is not None:
             tasks = [task for task in tasks if task.get('id') in task_ids]
-        elif not named_courses:
+        elif not named_courses and not upcoming:
             tasks = [task for task in tasks if terms & _tokens(task.get('title', '') + ' ' + task['course'])]
         course_terms = set().union(*(_tokens(course) for course in named_courses))
         for course in settings.get('courses', ()):
             if course['id'].casefold() in named_courses:
                 course_terms.update(_tokens(course.get('label', '')))
         topic_terms = terms - course_terms
+        if upcoming:
+            topic_terms -= _tokens('donne moi montre liste toutes prochaines prochains échéances dates deadlines venir')
         if topic_terms and task_ids is None:
             scores = {task['id']: len(topic_terms & _tokens(task.get('title', '') + ' ' + task.get('action', '')))
                       for task in tasks}
@@ -289,9 +318,11 @@ class KnowledgeService:
                     else:
                         resolved = resolve_task(SimpleNamespace(db=state), candidate,
                                                 now.astimezone(ZoneInfo(reminders.get('timezone', 'Europe/Bucharest'))),
-                                                reminders.get('policy', {}), include_past=True)
+                                                reminders.get('policy', {}), include_past=not upcoming)
                 except (sqlite3.Error, KeyError, TypeError, ValueError):
                     resolved, row, source_state = {'unconfirmed': True, 'reason': 'source à revalider'}, None, None
+                if resolved is None:
+                    continue
                 if row and task_ids is None:
                     self._remember(scope, [(source, key, *row)])
                 payload = json.loads(row[1]) if row else {}
@@ -318,6 +349,9 @@ class KnowledgeService:
                                       by_id[item.id].get('academic_year') or by_id[item.id].get('year'))]
             if not evidence:
                 return (), 'Je n’ai pas de date confirmée pour ' + ', '.join(sorted(requested_years)) + '. Tu parles de l’année de l’échéance ou de l’année universitaire ?', ()
+        if upcoming:
+            evidence.sort(key=lambda item: (item.date_value is None, item.date_value or '', item.id))
+            return tuple(evidence), '', ()
         if task_ids is None and len(evidence) > 1 and not re.search(r'\b(toutes?|dates|[eé]ch[eé]ances|r[eé]capitul)\b', question, re.I):
             options = evidence[:4]
             return tuple(options), 'Tu parles de quelle échéance : ' + ' ; '.join(item.title for item in options) + ' ?', ()
@@ -483,13 +517,18 @@ class KnowledgeService:
         if (request.intent != 'course' and not requested_courses
                 and (_HISTORY.search(request.query) or _MEDIA.search(request.query))):
             return self._conversation(request, moment)
-        if not allowed:
-            return EvidenceBundle(coverage='Aucune source métier explicitement partagée avec ce salon.')
         named_courses = requested_courses or _course_ids(CUSTOM_EMOJI.sub('', request.query), settings, allowed)
+        if request.intent == 'auto' and not (named_courses or _DEADLINE.search(request.query) or _COURSE_INTENT.search(request.query)):
+            return EvidenceBundle()
+        private_help = 'Utilise /a-faire pour consulter tes échéances en privé.'
+        if not allowed:
+            return EvidenceBundle(coverage='La recherche des cours n’est pas configurée pour ce salon. ' + private_help)
         if named_courses:
             allowed = frozenset(source for source in allowed if _course_source_id(source) in named_courses)
             if not allowed:
-                return EvidenceBundle(coverage='Je n’ai pas de source partagée pour le cours demandé.')
+                return EvidenceBundle(coverage='Ce cours n’est pas partagé avec ce salon. ' + private_help)
+            if _COURSE_FOLLOWUP.fullmatch(request.query.strip()):
+                return EvidenceBundle(clarification='Tu cherches les prochaines échéances de ce cours, ses consignes ou autre chose ?')
         tasks, clarification, gaps = self._tasks(
             request.scope, request.query, settings, moment, allowed, named_courses=named_courses)
         if clarification:
@@ -497,6 +536,10 @@ class KnowledgeService:
         if tasks:
             selected = _bounded(tasks, request.budget_chars)
             return EvidenceBundle(selected, coverage='' if selected else 'Budget insuffisant pour une preuve complète.', gaps=gaps)
+        if _upcoming_deadlines(request.query):
+            courses = ' pour ' + ', '.join(sorted(name.upper() for name in named_courses)) if named_courses else ''
+            return EvidenceBundle(coverage='Je n’ai trouvé aucune échéance à venir confirmée' + courses
+                                  + ' dans la liste de tâches disponible.', gaps=gaps)
         sources, source_gaps = self._source_evidence(request.scope, request.query, allowed)
         pdfs, pdf_gaps = self._pdf_evidence(request.scope, request.query, allowed, settings)
         selected = _bounded([*sources, *pdfs], request.budget_chars)

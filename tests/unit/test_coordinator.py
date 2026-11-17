@@ -173,7 +173,7 @@ class CoordinatorTests(unittest.TestCase):
     def test_policies_keep_backfill_acknowledgements_and_human_chat_silent(self):
         self.assertEqual(decide(self.message(ingestion_mode='backfill'),direct=True).decision,'silence')
         self.assertEqual(decide(self.message(text='Merci Haddock !'),direct=True).decision,'silence')
-        self.assertEqual(decide(self.message(text="J'aime Tintin"),direct=False).decision,'silence')
+        self.assertEqual(decide(self.message(text="J'aime Tintin"),direct=False).decision,'wait')
         self.assertEqual(decide(self.message(mentioned_user_ids=('human',)),direct=False).decision,'silence')
         incomplete=decide(self.message(text='Haddock, je voulais savoir…'),direct=True)
         self.assertEqual(incomplete.decision,'wait')

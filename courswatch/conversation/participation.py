@@ -37,7 +37,7 @@ def decide(envelope, *, direct, ambient_allowed=True, mode='selective', now=None
         if INCOMPLETE.search(text):
             return ParticipationDecision('wait', 'incomplete_request', text, 600)
         return ParticipationDecision('respond', 'direct_request', text or 'Décrire le média joint')
-    if mode == 'direct_only' or not ambient_allowed or len(text) < 18:
+    if mode == 'direct_only' or not ambient_allowed:
         return ParticipationDecision('silence', 'ambient_restraint')
     # A human-addressed message is not promoted by the previous interlocutor.
     if envelope.mentioned_user_ids:

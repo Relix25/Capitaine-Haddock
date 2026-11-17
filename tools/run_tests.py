@@ -33,6 +33,7 @@ PROFILES = {
         "tests.unit.test_haddock_easter_egg", "tests.unit.test_course_translation", "tests.unit.test_conversation_metrics", "tests.unit.test_model_switch",
         "tests.unit.test_coordinator", "tests.unit.test_conversation_memory", "tests.unit.test_knowledge",
         "tests.unit.test_media", "tests.unit.test_model_profiles", "tests.unit.test_ingestion",
+        "tests.unit.test_participation_model",
     ),
     "documents": (
         "tests.integration.test_moodle_pdf_versions", "tests.integration.test_moodle_pdf_collection", "tests.integration.test_attachment_bindings",

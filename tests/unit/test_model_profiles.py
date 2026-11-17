@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from courswatch.conversation.brain import BudgetExhausted, LunaBrain, LunaError, TokenBudget
-from courswatch.conversation.models import (ENDPOINT, MODEL_CHOICES, resolve_profile,
+from courswatch.conversation.models import (ENDPOINT, MODEL_CHOICES, MODEL_ENDPOINTS, resolve_profile,
                                              settings_for_selection)
 
 
@@ -22,7 +22,7 @@ def settings(profile='deepseek', **extra):
 
 def synthetic_reviewed_record(profile='deepseek', **extra):
     """Fictitious review identity used only for exercising the gated adapter."""
-    return {'provider':'commandcode', 'endpoint':ENDPOINT,
+    return {'provider':'commandcode', 'endpoint':MODEL_ENDPOINTS[profile],
             'requested_model_id':MODEL_CHOICES[profile]['model'],
             'require_zdr':MODEL_CHOICES[profile]['require_zdr'],
             'image_input':'verified','multi_image':'verified','structured_output':'verified',
@@ -65,6 +65,9 @@ class ModelProfileTests(unittest.TestCase):
             self.assertEqual(brain.budget.snapshot()['calls'],0)
 
     def test_verified_record_requires_exact_model_endpoint_json_and_privacy_evidence(self):
+        stale = synthetic_reviewed_record('hy4', endpoint=ENDPOINT)
+        with self.assertRaises(ValueError):
+            resolve_profile(settings('hy4', model_capabilities={'hy4': stale}))
         for change in ({'evidence':''},{'endpoint':'https://elsewhere.invalid'},
                        {'requested_model_id':'tencent/hy4-flash'},{'require_zdr':False},
                        {'api_structured_output':'unknown'},{'provider':'openai'}):

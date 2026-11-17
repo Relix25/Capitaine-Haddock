@@ -53,14 +53,19 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_hy4_omits_zdr_only_when_explicit_and_keeps_store_false(self):
         with patch('courswatch.conversation.brain.read_api_key',return_value='fake'):
             chat = LunaChat(SimpleNamespace(),self.root,{**self.settings,'require_zdr':False,'model':'tencent/hy4-flash'},lambda:{})
-        output={'status':'completed','usage':{'input_tokens':10,'output_tokens':5},
-                'output':[{'type':'message','content':[{'type':'output_text','text':json.dumps(
-                    {'action':'text','reply':'À bord !','sample_id':'none'})}]}]}
+        output={'choices':[{'message':{'content':json.dumps(
+                    {'action':'text','reply':'À bord !','sample_id':'none'})},'finish_reason':'stop'}],
+                'usage':{'prompt_tokens':10,'completion_tokens':5}}
         with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(json.dumps(output).encode())) as send:
             chat.brain.decide([],True)
         request=send.call_args.args[0]
         self.assertIsNone(request.get_header('X-cmd-zdr'))
-        self.assertFalse(json.loads(request.data)['store'])
+        self.assertEqual(request.full_url, 'https://api.commandcode.ai/provider/v1/chat/completions')
+        body = json.loads(request.data)
+        self.assertFalse(body['store'])
+        self.assertEqual(body['reasoning_effort'], 'off')
+        self.assertTrue(body['stream_options']['include_usage'])
+        self.assertTrue(body['response_format']['json_schema']['strict'])
         self.assertEqual(chat.brain.budget.snapshot()['used_tokens'],15)
         with self.assertRaises(ValueError):
             LunaBrain(self.root,{**self.settings,'require_zdr':'false'},api_key='fake')
@@ -110,7 +115,13 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             if len(captured) == 1:
                 loop.call_soon_threadsafe(entered.set)
                 self.assertTrue(finish.wait(3))
-            return io.BytesIO(json.dumps(response).encode())
+            if request.full_url.endswith('/chat/completions'):
+                output = {'choices':[{'message':{'content':response['output'][0]['content'][0]['text']},
+                                      'finish_reason':'stop'}],
+                          'usage':{'prompt_tokens':10,'completion_tokens':5}}
+            else:
+                output = response
+            return io.BytesIO(json.dumps(output).encode())
 
         with patch('courswatch.conversation.brain.urllib.request.urlopen', side_effect=send):
             initial = asyncio.create_task(chat._model(snapshot, True, '', {},

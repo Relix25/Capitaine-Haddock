@@ -1,3 +1,4 @@
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -8,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from courswatch.conversation.contracts import MediaDescriptor, MessageEnvelope, RetrievalRequest, Scope
+from courswatch.conversation.contracts import ConversationSnapshot, MediaDescriptor, MessageEnvelope, RetrievalRequest, Scope
 from courswatch.discord_app.tasks import task_rows
 from courswatch.documents.versions import archive_pdf
 from courswatch.knowledge import KnowledgeService, render_answer
@@ -28,7 +29,7 @@ class KnowledgeTests(unittest.TestCase):
         self.config = {'reminders_file': str(self.root / 'reminders.json')}
         self.tasks = []
         self.write_tasks()
-        with sqlite3.connect(self.root / 'state.db') as db:
+        with closing(sqlite3.connect(self.root / 'state.db')) as db:
             migrate(db, 'state')
         self.journal = Journal(self.root / 'conversation.db', now=lambda: self.now)
         self.shared = {self.scope: ('moodle:TEST-AAIT', 'teams:TEST-AAIT')}
@@ -41,7 +42,7 @@ class KnowledgeTests(unittest.TestCase):
         value = {'key': key, 'title': title, 'body': body,
                  'url': 'https://example.org/source/test-aait', **metadata}
         fingerprint = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
-        with sqlite3.connect(self.root / 'state.db') as db:
+        with closing(sqlite3.connect(self.root / 'state.db')) as db, db:
             db.execute('INSERT OR REPLACE INTO items VALUES(?,?,?,?)',
                        (source, key, fingerprint, json.dumps(value)))
             db.execute('INSERT OR REPLACE INTO sources VALUES(?,?,?,?)',
@@ -68,6 +69,47 @@ class KnowledgeTests(unittest.TestCase):
         self.assertIn('20/11/2026 à 18:00', reply)
         self.assertIn('https://example.org/source/test-aait', reply)
         self.assertTrue(self.service.revalidate(self.scope, result))
+
+    def test_upcoming_deadlines_match_private_calendar_and_exclude_completed_tasks(self):
+        self.config['courses'] = [{'id': 'TEST-AAIT'}, {'id': 'SOS'}]
+        self.shared[self.scope] += ('moodle:SOS',)
+        for name, day, completed in [('old', 11, False), ('closed', 19, True),
+                                     ('last', 29, False), ('first', 20, False)]:
+            self.item(f'Due: {day} November 2026, 06:00 PM', key=name)
+            self.task(name, title=name, completed=completed, reference={'source': 'moodle:TEST-AAIT', 'key': name})
+        question = 'Donne moi les prochaines échéances pour TEST-AAIT ?'
+        self.assertTrue(self.service.is_course_question(question, self.scope))
+        bundle = self.service.query(self.scope, question)
+        self.assertEqual([e.id for e in bundle.evidence], ['task:first', 'task:last'])
+        self.assertTrue(self.service.revalidate(self.scope, bundle))
+        private, _ = task_rows(self.root, self.config, 'TEST-AAIT', now=self.now)
+        self.assertEqual([row['task']['id'] for row in private], ['first', 'last'])
+        self.item('Bienvenue au cours SOS', source='moodle:SOS', title='Annonce administrative')
+        empty = self.service.query(self.scope, question.replace('TEST-AAIT', 'SOS'))
+        self.assertFalse(empty.evidence)
+        self.assertIn('à venir confirmée pour SOS', render_answer(empty))
+        self.shared.clear()
+        self.assertIn('/a-faire', render_answer(self.service.query(self.scope, question)))
+
+    def test_greeting_cannot_select_an_official_announcement(self):
+        self.item('Bonjour mon capitaine !', title='Annonce')
+        bundle = self.service.query(self.scope, 'Bonjour mon capitaine !')
+        self.assertFalse(bundle.evidence or bundle.coverage or bundle.clarification)
+        self.assertFalse(self.service.path.exists())
+
+    def test_short_course_followup_requires_same_requester_calendar_context(self):
+        self.config['courses'] = [{'id': 'AAIT'}, {'id': 'SOS'}]
+        self.shared[self.scope] = ('moodle:AAIT', 'moodle:SOS')
+        original = MessageEnvelope(self.scope, '1', 'alice', 'Alice', 'Les prochaines échéances pour AAIT ?',
+                                   self.now.isoformat())
+        followup = replace(original, message_id='2', text='Et SOS ?')
+        snap = ConversationSnapshot('t', 'c', 1, self.scope, (original, followup), ('2',), ('alice',),
+                                    '2', followup.text, (('1', 1), ('2', 1)))
+        result = self.service.query(self.scope, self.service.followup_question(snap))
+        self.assertIn('à venir confirmée pour SOS', render_answer(result))
+        unrelated = replace(snap, messages=(replace(original, author_id='bob'), followup))
+        self.assertEqual(self.service.followup_question(unrelated), 'Et SOS ?')
+        self.assertTrue(self.service.query(self.scope, 'Et SOS ?').clarification)
 
     def test_ambiguous_project_clarifies_instead_of_choosing_nearest_deadline(self):
         self.item('Due: Friday, 20 November 2026, 06:00 PM')
@@ -162,7 +204,7 @@ class KnowledgeTests(unittest.TestCase):
         self.assertFalse(self.service.revalidate(self.scope, first))
         current = self.service.query(self.scope, 'Quand la remise TEST-AAIT ?')
         self.assertIn('23/11/2026 à 16:00', render_answer(current))
-        with sqlite3.connect(self.root / 'knowledge.db') as db:
+        with closing(sqlite3.connect(self.root / 'knowledge.db')) as db:
             statuses = [row[0] for row in db.execute('SELECT status FROM source_versions')]
         self.assertEqual(sorted(statuses), ['current', 'replaced'])
 
