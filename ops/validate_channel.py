@@ -14,7 +14,7 @@ import urllib.request
 
 API = 'https://discord.com/api/v10'
 NO_MENTIONS = {'parse': [], 'users': [], 'roles': [], 'replied_user': False}
-COMMANDS = {'cours', 'actualiser', 'status', 'a-faire'}
+COMMANDS = {'cours', 'actualiser', 'status', 'a-faire', 'settings'}
 
 
 def safe_payload(payload):
@@ -144,7 +144,7 @@ async def validate_channel(config, token, *, send_test=False, transport=None):
         await view.next.callback(interaction)
         await view.previous.callback(interaction)
         final = safe_payload({'content': 'Validation technique du bot : OK. '
-                              'Quatre commandes présentes, cartes et pagination vérifiées. '
+                              'Cinq commandes présentes, cartes et pagination vérifiées. '
                               'Aucun rôle ni utilisateur mentionné.',
                               'embeds': [], 'components': []})
         value = await asyncio.to_thread(request, endpoint + '/' + message_id, final, 'PATCH')

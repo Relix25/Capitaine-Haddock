@@ -11,6 +11,12 @@ def stream(*events):
 
 
 class MetricsTests(unittest.TestCase):
+    def test_placeholder_stream_has_overall_deadline_with_controlled_clock(self):
+        ticks=iter((0,0,31))
+        source=stream({'type':'response.created'})
+        with self.assertRaises(TimeoutError):
+            read_model_response(source,0,deadline_clock=lambda:next(ticks),deadline_seconds=30)
+
     def test_first_token_ignores_placeholder_events_and_assembles_terminal_output(self):
         times=iter((10.2,10.7))
         source=stream({'type':'response.created'},

@@ -3,11 +3,32 @@
   "application_id": "YOUR_APPLICATION_ID",
   "guild_id": "YOUR_GUILD_ID",
   "channel_id": "YOUR_CHANNEL_ID",
-  "role_ids": ["YOUR_UPB_ROLE_ID"],
+  "role_ids": [
+    "YOUR_UPB_ROLE_ID"
+  ],
   "user_ids": [],
   "presentation": "embed",
   "interactive": true,
   "persona": "haddock",
-  "easter_egg": {"enabled": true, "cooldown_seconds": 2, "voice_probability": 0.5},
-  "luna": {"enabled": false, "provider": "commandcode", "model": "deepseek/deepseek-v4.1-flash", "daily_token_limit": 10000000}
+  "easter_egg": {
+    "enabled": true,
+    "cooldown_seconds": 2,
+    "voice_probability": 0.5
+  },
+  "luna": {
+    "enabled": false,
+    "provider": "commandcode",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "daily_token_limit": 10000000,
+    "memory": {
+      "retention_days": 90,
+      "backfill_enabled": true,
+      "backfill_days": 7,
+      "backfill_limit": 1000
+    },
+    "knowledge": {
+      "allowed_sources": {}
+    },
+    "participation_mode": "selective"
+  }
 }

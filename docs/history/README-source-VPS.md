@@ -1,5 +1,7 @@
 # Veille des cours UPB sur le VPS
 
+> Note locale du 17 novembre 2026 : ce document décrit un état antérieur. La demande explicite autorise maintenant un journal durable du salon autorisé et les descriptions médias ; voir [LOCAL-IMPLEMENTATION.md](../LOCAL-IMPLEMENTATION.md). Les autres restrictions restent applicables. Aucun déploiement de ce nouveau code n’a été effectué.
+
 Ce service consulte Moodle et Teams avec un navigateur dédié, compare les informations collectées aux dernières observations et envoie des alertes Discord ainsi qu'un rappel quotidien des projets. Il fonctionne sur le VPS lorsque le PC est éteint. Le cours Administrativ est exclu.
 
 ## État au 12 novembre 2026

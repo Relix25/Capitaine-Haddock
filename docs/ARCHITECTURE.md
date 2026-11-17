@@ -13,10 +13,12 @@ Les implémentations résident dans `courswatch/`. `main.py` est le seul fichier
 | `discord_app/` | Gateway, commandes, vues privées, transport, livraison et santé |
 | `documents/` | Transfert borné, archives SHA256, identités de pièces jointes et publication PDF |
 | `publishing/` | Snapshot pédagogique, notes automatiques et publication du coffre |
-| `conversation/` | Prompt utilisateur, contrat Discord, mémoire, quota, décisions, répliques et voix |
+| `conversation/` | Contrats attribués, tours, participation, profils, quota, décisions, répliques et voix |
+| `memory/`, `knowledge/` | Journal versionné, FTS5, couverture et preuves des sources métier existantes |
+| `media/` | Normalisation, acquisition bornée, images fixes/GIF/WebP, cache et observations attribuées |
 | `translation.py`, `translation_worker.py` | Cache et worker local ; dépendances d'inférence chargées à l'utilisation |
 
-`tests/` regroupe les implémentations ; les vingt-sept adaptateurs de tests racine conservent les anciennes commandes. `tools/run_tests.py` sélectionne les profils explicitement, sans découverte des scripts d'exploitation. `ops/` prépare des lots et vérifications. `systemd/` est l'unique copie des unités et de leurs drop-ins. Les opérations ponctuelles achevées ont été retirées de l'arbre courant et restent accessibles dans Git.
+`tests/` regroupe les implémentations ; les vingt-sept adaptateurs racine ont été retirés après migration vers les imports et commandes canoniques. `tools/run_tests.py` sélectionne les profils explicitement, sans découverte des scripts d'exploitation. `ops/` prépare des lots et vérifications. `systemd/` est l'unique copie des unités et de leurs drop-ins. Les opérations ponctuelles achevées ont été retirées de l'arbre courant et restent accessibles dans Git.
 
 ## Collecte, état et livraison
 
@@ -32,7 +34,7 @@ Les rappels rapprochent les tâches configurées des sources effectivement colle
 
 ## Commandes et cartes privées
 
-`discord_app.bot` maintient la connexion Gateway sortante, les quatre commandes et les boutons. Les contrôles imposent serveur, salon et rôle configurés ; une carte privée est liée à son demandeur.
+`discord_app.bot` maintient la connexion Gateway sortante, les cinq commandes (`a-faire`, `cours`, `status`, `actualiser`, `settings`) et les boutons. Les contrôles imposent serveur, salon et rôle configurés ; une carte privée est liée à son demandeur.
 
 `TaskListView` regroupe jusqu'à trois embeds distincts par message privé, dans la limite totale de 6 000 caractères. Chaque tâche garde sa date visible, son action séparée et des boutons de liens numérotés. Les dates à venir sont croissantes ; les dates passées optionnelles suivent de la plus proche à la plus ancienne ; les dates à confirmer terminent la liste. La pagination dure quatorze minutes et recontrôle l'accès et le demandeur.
 
@@ -42,11 +44,11 @@ Les commandes sur cache utilisent directement la réponse initiale privée lorsq
 
 ## Conversations et modèle
 
-La configuration active sélectionne CommandCode et `deepseek/deepseek-v4.1-flash`. L'endpoint Responses est fixe et la clé `CMD_API_KEY` est lue dans le fichier privé du VPS. Une erreur ne provoque aucun repli automatique vers un autre fournisseur. Les requêtes imposent `store: false` et `x-cmd-zdr: 1` ; la disponibilité d'une route sans rétention reste celle du fournisseur.
+La configuration sélectionne explicitement CommandCode et `deepseek/deepseek-v4.1-flash` ou `tencent/hy4-flash`, avec les préférences persistantes de `/settings`. L'endpoint Responses est fixe et la clé `CMD_API_KEY` reste privée. Une configuration absente ou incompatible produit une erreur locale, sans repli Luna/OpenAI. Les requêtes imposent `store: false` ; DeepSeek exige `x-cmd-zdr: 1`, HY4 conserve sa politique déclarée. Un profil immuable capture modèle demandé, politique, capacités et version par requête. La vision des deux modèles est confirmée par le propriétaire ; la combinaison images/API/JSON/politique n'est pas testée réellement dans ce lot local. Elle reste indisponible sans preuves de capacité explicites et compatibles.
 
 `conversation/prompt-haddock.txt` adapte le texte fourni par l'utilisateur à une conversation composée uniquement de paroles : ton et vocabulaire du capitaine, sans narration de gestes ni mise en scène. `conversation/persona.py` le charge et ajoute le contrat technique : décision JSON validée, audience Discord autorisée, absence de secrets, d'actions exécutables et de faits de cours inventés. Les préférences de langage, dont `/jurons`, s'expriment dans les messages adressés au bot ; elles n'enregistrent pas de commandes slash supplémentaires.
 
-La mémoire de conversation est courte et en RAM ; aucun historique de textes Discord n'est conservé dans SQLite. Le regroupement des demandes directes attend 150 ms ; les interventions spontanées gardent leurs limites propres et le silence par défaut. Un indicateur de saisie accompagne les demandes directes. Les samples vocaux ne remplacent pas une réponse utile à une question.
+La demande explicite du 17 novembre remplace l'ancienne absence d'historique : `conversation.db` conserve le journal attribué, versions, suppressions, couverture, observations médias et états de publication. La mémoire du prompt reste sélective et bornée. Les tours directs FIFO ne s'écrasent plus ; le regroupement exige une intention compatible ou un lien de réponse. Une attente réveillable donne priorité aux directs ; les instantanés figent cible et révisions avant recherche, puis sont revalidés avant l'engagement de l'envoi. Un rattrapage borné de sept jours enrichit la mémoire en silence, sans rejouer les questions anciennes. Les interventions spontanées gardent leurs limites et le silence par défaut. Les samples vocaux ne remplacent pas une réponse utile.
 
 Les appels de conversation demandent un flux Responses. `conversation.metrics` mesure le premier delta de texte non blanc et l'événement terminal, puis conserve les mesures séparément des trois champs de décision JSON. Le modèle ne calcule pas ses propres statistiques. Le client attend toujours une décision complète et validée avant d'envoyer la réponse.
 

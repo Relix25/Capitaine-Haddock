@@ -28,7 +28,7 @@ class FakeDiscord:
         if path == '/channels/' + CHANNEL:
             return {'id': CHANNEL, 'guild_id': GUILD}
         if path.endswith('/commands'):
-            return [{'name': name} for name in ('cours', 'actualiser', 'status', 'a-faire')]
+            return [{'name': name} for name in ('cours', 'actualiser', 'status', 'a-faire', 'settings')]
         return dict(self.receipt)
 
 

@@ -38,9 +38,10 @@ class LunaTests(unittest.TestCase):
         self.assertEqual(ledger.snapshot()['used_tokens'],70)
         with self.assertRaises(BudgetExhausted):
             ledger.reserve(31,'direct')
-        # Once unavailable, even a smaller call stays blocked for the rest of the day.
-        with self.assertRaises(BudgetExhausted):
-            TokenBudget(self.root/'usage.db',limit=100).reserve(1,'direct')
+        # An oversized job does not burn the remaining balance for smaller calls.
+        small = TokenBudget(self.root/'usage.db',limit=100).reserve(1,'direct')
+        self.assertIsInstance(small,int)
+        self.assertFalse(ledger.snapshot()['blocked'])
 
     def test_bucharest_midnight_resets_usage_and_block_without_sleep(self):
         now = [datetime(2026,11,12,21,59,59,tzinfo=timezone.utc)]
@@ -68,19 +69,19 @@ class LunaTests(unittest.TestCase):
 
     def test_exhausted_quota_makes_zero_model_requests(self):
         transport = Mock()
-        brain = LunaBrain(self.root,{'daily_token_limit':100},api_key='fake',transport=transport)
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash','daily_token_limit':100},api_key='fake',transport=transport)
         with self.assertRaises(BudgetExhausted): brain.decide([],True)
         with self.assertRaises(BudgetExhausted): brain.decide([],False)
         transport.assert_not_called()
-        self.assertTrue(brain.budget.snapshot()['blocked'])
+        self.assertFalse(brain.budget.snapshot()['blocked'])
 
     def test_real_payload_contract_and_no_private_text_in_persistent_files(self):
         transport = Mock(return_value=response())
-        brain = LunaBrain(self.root,{},api_key='fake',transport=transport)
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=transport)
         result = brain.decide([{'speaker':'Alice','text':'PRIVATE_SENTINEL','is_bot':False}],True)
         self.assertEqual(result['action'],'text')
         payload = transport.call_args.args[0]
-        self.assertEqual(payload['model'],'gpt-6-luna')
+        self.assertEqual(payload['model'],'deepseek/deepseek-v4.1-flash')
         self.assertFalse(payload['store'])
         self.assertEqual(payload['reasoning'],{'effort':'none'})
         self.assertTrue(payload['text']['format']['strict'])
@@ -89,7 +90,7 @@ class LunaTests(unittest.TestCase):
             if path.is_file(): self.assertNotIn(b'PRIVATE_SENTINEL',path.read_bytes())
 
     def test_commandcode_uses_its_own_endpoint_key_zdr_and_structured_decision(self):
-        brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='cmd_private_synthetic_123456789')
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='cmd_private_synthetic_123456789')
         with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(json.dumps(response()).encode())) as send:
             decision = brain.decide([{'speaker':'Alice','text':'PRIVATE_SENTINEL','is_bot':False}],True)
         self.assertEqual(decision['action'],'text')
@@ -113,7 +114,7 @@ class LunaTests(unittest.TestCase):
 
     def test_supplied_character_prompt_reaches_the_model_with_discord_contract(self):
         transport = Mock(return_value=response())
-        brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='fake',transport=transport)
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=transport)
         brain.decide([{'speaker':'Alice','text':'Haddock, /jurons rares','is_bot':False}],True)
         payload = transport.call_args.args[0]
         self.assertEqual(payload['instructions'],PERSONA_TEXT.rstrip()+'\n\n'+DISCORD_CONTRACT)
@@ -127,7 +128,7 @@ class LunaTests(unittest.TestCase):
     def test_commandcode_missing_key_never_falls_back_to_openai(self):
         transport = Mock()
         with patch('courswatch.conversation.brain.read_api_key',return_value='') as read:
-            brain = LunaBrain(self.root,{'provider':'commandcode'},transport=transport)
+            brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},transport=transport)
         read.assert_called_once_with(key_name='CMD_API_KEY')
         with self.assertRaises(LunaError) as error:
             brain.decide([],True)
@@ -143,7 +144,7 @@ class LunaTests(unittest.TestCase):
         def measured(stream,started):
             times=iter((started+.2,started+.7))
             return read_model_response(stream,started,clock=lambda:next(times))
-        brain=LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
+        brain=LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake')
         with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(raw)) as send, \
              patch('courswatch.conversation.brain.read_model_response',side_effect=measured):
             decision=brain.decide([],True)
@@ -159,7 +160,7 @@ class LunaTests(unittest.TestCase):
     def test_incomplete_stream_keeps_confirmed_tokens_on_the_local_fallback_error(self):
         final=dict(response(usage=(100,7)),status='incomplete',incomplete_details={'reason':'max_output_tokens'})
         raw=b'data: '+json.dumps({'type':'response.incomplete','response':final}).encode()+b'\n\n'
-        brain=LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
+        brain=LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake')
         with patch('courswatch.conversation.brain.urllib.request.urlopen',return_value=io.BytesIO(raw)):
             with self.assertRaises(LunaError) as error:brain.decide([],True)
         self.assertEqual(error.exception.code,'output_limit')
@@ -169,7 +170,7 @@ class LunaTests(unittest.TestCase):
     def test_key_reader_selects_only_the_requested_private_env_entry(self):
         env = self.root/'synthetic.env'
         env.write_text('# CMD_API_KEY=comment\nOPENAI_API_KEY="old-fake"\nCMD_API_KEY=\'cmd_fake_only\'\n')
-        self.assertEqual(read_api_key(env),'old-fake')
+        self.assertEqual(read_api_key(env),'cmd_fake_only')
         self.assertEqual(read_api_key(env,key_name='CMD_API_KEY'),'cmd_fake_only')
         self.assertEqual(read_api_key(env,key_name='ABSENT_KEY'),'')
 
@@ -181,9 +182,9 @@ class LunaTests(unittest.TestCase):
         self.assertFalse((self.root/'luna-usage.db').exists())
 
     def test_provider_and_limit_change_preserve_confirmed_usage(self):
-        before = LunaBrain(self.root,{},api_key='fake',transport=lambda _:response())
+        before = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=lambda _:response())
         before.decide([],True)
-        after = LunaBrain(self.root,{'provider':'commandcode','daily_token_limit':10_000_000},
+        after = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash','daily_token_limit':10_000_000},
                           api_key='fake',transport=lambda _:response())
         self.assertEqual(after.budget.snapshot()['used_tokens'],120)
         after.decide([],True)
@@ -194,7 +195,7 @@ class LunaTests(unittest.TestCase):
         self.assertEqual(snapshot['remaining_tokens'],9_999_760)
 
     def test_commandcode_refuses_zdr_without_retry_or_provider_fallback(self):
-        brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake')
         error = urllib.error.HTTPError(brain.endpoint,422,'synthetic',{},None)
         with patch('courswatch.conversation.brain.urllib.request.urlopen',side_effect=error) as send:
             with self.assertRaises(LunaError) as result:
@@ -213,10 +214,11 @@ class LunaTests(unittest.TestCase):
 
     def test_timeout_retains_reservation_and_unbilled_error_releases_it(self):
         transport = Mock(side_effect=LunaError('connection_failed'))
-        brain = LunaBrain(self.root,{},api_key='fake',transport=transport)
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=transport)
         with self.assertRaises(LunaError): brain.decide([],True)
         reserved = brain.budget.snapshot()['reserved_tokens']
         self.assertGreater(reserved,700)
+        brain.retry_after = 0
         transport.side_effect = LunaError('http_401')
         with self.assertRaises(LunaError): brain.decide([],True)
         self.assertEqual(brain.budget.snapshot()['reserved_tokens'],reserved)
@@ -225,7 +227,7 @@ class LunaTests(unittest.TestCase):
     def test_api_total_is_authoritative_and_cached_input_is_not_added_twice(self):
         result = response(usage=(100,20))
         result['usage'].update(total_tokens=120,input_tokens_details={'cached_tokens':80,'cache_write_tokens':10})
-        brain = LunaBrain(self.root,{},api_key='fake',transport=lambda _:result)
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=lambda _:result)
         brain.decide([],True)
         snapshot = brain.budget.snapshot()
         self.assertEqual(snapshot['used_tokens'],120)
@@ -262,14 +264,14 @@ class LunaTests(unittest.TestCase):
     def test_invalid_incomplete_and_refusal_still_count_usage(self):
         for code,bad in [('invalid_schema',response(action='execute')),('incomplete_response',dict(response(),status='incomplete')),
                     ('model_refusal',dict(response(),output=[{'type':'message','content':[{'type':'refusal','refusal':'no'}]}]))]:
-            brain = LunaBrain(self.root,{},api_key='fake',transport=lambda _:bad)
+            brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=lambda _:bad)
             with self.assertRaises(LunaError) as error: brain.decide([],True)
             self.assertEqual(error.exception.code,code)
         self.assertEqual(brain.budget.snapshot()['used_tokens'],360)
 
     def test_refusal_is_not_reported_as_a_network_outage(self):
         result = dict(response(),output=[{'type':'message','content':[{'type':'refusal','refusal':'private text'}]}])
-        brain = LunaBrain(self.root,{},api_key='fake',transport=lambda _:result)
+        brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=lambda _:result)
         with self.assertRaises(LunaError) as error: brain.decide([],True)
         self.assertEqual(error.exception.code,'model_refusal')
         report = json.loads((self.root/'reports/luna-status.json').read_text())
@@ -281,7 +283,7 @@ class LunaTests(unittest.TestCase):
         cases = [('output_limit',dict(response(),status='incomplete',incomplete_details={'reason':'max_output_tokens'})),
                  ('invalid_json',dict(response(),output=[{'type':'message','content':[{'type':'output_text','text':'{'}]}]))]
         for code,result in cases:
-            brain = LunaBrain(self.root,{},api_key='fake',transport=lambda _:result)
+            brain = LunaBrain(self.root,{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},api_key='fake',transport=lambda _:result)
             with self.assertRaises(LunaError) as error: brain.decide([],True)
             self.assertEqual(error.exception.code,code)
             report = json.loads((self.root/'reports/luna-status.json').read_text())

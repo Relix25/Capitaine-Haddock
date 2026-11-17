@@ -78,7 +78,8 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         await pending
         self.assertEqual(chat.brain.model,'tencent/hy4-flash')
         self.assertFalse(chat.debug_enabled)
-        self.assertEqual(chat.retry_after,0)
+        # A model change cannot bypass an existing provider cooldown.
+        self.assertEqual(chat.retry_after,999999999999)
         self.assertEqual(chat.brain.budget.snapshot()['used_tokens'],15)
         self.assertIn('PRIVATE_RAM_SENTINEL',str(chat.memory.context()))
         self.assertNotIn('PRIVATE_RAM_SENTINEL',(self.root/'model-selection.json').read_text())

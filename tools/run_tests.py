@@ -31,6 +31,8 @@ PROFILES = {
         "tests.unit.test_luna_brain", "tests.unit.test_luna_chat", "tests.unit.test_esn_watch",
         "tests.unit.test_haddock_voice", "tests.unit.test_haddock_emojis",
         "tests.unit.test_haddock_easter_egg", "tests.unit.test_course_translation", "tests.unit.test_conversation_metrics", "tests.unit.test_model_switch",
+        "tests.unit.test_coordinator", "tests.unit.test_conversation_memory", "tests.unit.test_knowledge",
+        "tests.unit.test_media", "tests.unit.test_model_profiles", "tests.unit.test_ingestion",
     ),
     "documents": (
         "tests.integration.test_moodle_pdf_versions", "tests.integration.test_moodle_pdf_collection", "tests.integration.test_attachment_bindings",
@@ -39,6 +41,7 @@ PROFILES = {
     "migration": (
         "tests.migration.test_configure_course_sync", "tests.migration.test_prepare_course_seed",
         "tests.migration.test_apply_course_seed_pc",
+        "tests.migration.test_conversation_rollback",
     ),
     "regression": (
         "tests.unit.test_pipeline", "tests.unit.test_schema", "tests.unit.test_compatibility", "tests.unit.test_refresh", "tests.unit.test_responses",
@@ -130,6 +133,7 @@ def _environment(directory: Path, dependency_paths: list[Path]) -> None:
         if name.startswith(("COURS_WATCH_", "COURSWATCH_TEST_")) or name in {
             "OPENAI_API_KEY", "OPENAI_ADMIN_KEY", "CMD_API_KEY", "COMMANDCODE_API_KEY",
             "DISCORD_BOT_TOKEN", "DISCORD_WEBHOOK_URL",
+            "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
         }:
             os.environ.pop(name, None)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"

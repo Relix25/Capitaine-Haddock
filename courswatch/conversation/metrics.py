@@ -1,4 +1,4 @@
-"""Measured model streams and bounded Discord subtext; no message history."""
+"""Measured model streams and bounded Discord subtext; technical metadata only."""
 import itertools
 import json
 import math
@@ -44,10 +44,19 @@ def _events(lines):
         yield json.loads('\n'.join(parts))
 
 
-def read_model_response(stream, started, clock=time.perf_counter):
+def read_model_response(stream, started, clock=time.perf_counter, *,
+                        deadline_seconds=30, deadline_clock=time.monotonic):
     """Time the first nonempty text delta, never headers or placeholder events."""
+    deadline = deadline_clock() + deadline_seconds
+
+    def check_deadline():
+        if deadline_clock() >= deadline:
+            raise TimeoutError('Model response deadline exceeded')
+
+    check_deadline()
     first_line = stream.readline(MAX_RESPONSE_BYTES + 1)
     while first_line and not first_line.strip():
+        check_deadline()
         first_line = stream.readline(MAX_RESPONSE_BYTES + 1)
     if len(first_line) > MAX_RESPONSE_BYTES:
         raise ValueError('Oversized model response')
@@ -60,16 +69,20 @@ def read_model_response(stream, started, clock=time.perf_counter):
         return MeasuredResult(value, {'ttft_ms': None, 'api_ms': (clock() - started) * 1000})
 
     def remaining_lines():
+        aggregate = len(first_line)
         while True:
+            check_deadline()
             raw = stream.readline(MAX_RESPONSE_BYTES + 1)
             if not raw:
                 return
-            if len(raw) > MAX_RESPONSE_BYTES:
+            aggregate += len(raw)
+            if len(raw) > MAX_RESPONSE_BYTES or aggregate > MAX_RESPONSE_BYTES:
                 raise ValueError('Oversized model stream line')
             yield raw
 
     first_text, pieces, text_size = None, [], 0
     for event in _events(itertools.chain([first_line], remaining_lines())):
+        check_deadline()
         kind = event.get('type')
         if kind == 'response.output_text.delta':
             delta = event.get('delta', '')
@@ -139,9 +152,7 @@ def _count(value):
 
 def footer(metrics, local_response=False):
     labels = {'deepseek/deepseek-v4.1-flash': 'DeepSeek V4.1 Flash',
-              'deepseek/deepseek-v4.1-flash-fast': 'DeepSeek V4.1 Flash Fast',
-              'deepseek/deepseek-v4.1-flash-ultrafast': 'DeepSeek V4.1 Flash Ultrafast',
-              'gpt-6-luna': 'GPT-6 Luna', 'tencent/hy4-flash': 'Tencent HY4 Flash'}
+              'tencent/hy4-flash': 'Tencent HY4 Flash'}
     name = labels.get(metrics.get('model'), 'Local' if local_response else 'IA')
     parts = [name, 'TTFT ' + _seconds(metrics.get('ttft_ms')),
              'Total IA ' + _seconds(metrics.get('api_ms'))]

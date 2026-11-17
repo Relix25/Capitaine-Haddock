@@ -16,6 +16,50 @@ from courswatch.conversation.metrics import MeasuredResult
 
 
 class ChatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_social_retrieval_is_versioned_and_deletion_invalidates_reply(self):
+        from courswatch.memory import Journal
+        from courswatch.knowledge import KnowledgeService
+        from courswatch.conversation.contracts import MessageEnvelope, Scope
+        fixed=datetime(2026,11,17,12,tzinfo=timezone.utc)
+        chat=self.chat();self.fast_clock(chat)
+        chat.journal=Journal(chat.data/'conversation.db',now=lambda:fixed)
+        chat.knowledge=KnowledgeService(chat.data,{},journal=chat.journal,clock=lambda:fixed)
+        scope=Scope('1','2')
+        old=MessageEnvelope(scope,'10','4','Alice','Je préfère le bleu.',(fixed-timedelta(days=7)).isoformat())
+        target=MessageEnvelope(scope,'20','5','Bob','Haddock, pourquoi Alice préfère le bleu ?',fixed.isoformat())
+        chat.journal.ingest(old);chat.journal.ingest(target)
+        chat.coordinator.observe(target)
+        turn=chat.coordinator.enqueue(target,True)
+        snapshot=chat.coordinator.freeze(turn)
+        facts=await chat.facts(snapshot)
+        self.assertIn('bleu',facts)
+        bundle=chat._evidence[snapshot.turn_id]
+        self.assertTrue(any(proof.source_id=='10' for proof in bundle.evidence))
+        chat.journal.delete(scope,'10')
+        self.assertFalse(await chat._valid(snapshot,self.message(id=20),bundle))
+        await chat.close()
+
+    async def test_command_help_is_local_and_does_not_use_historical_model(self):
+        chat=self.chat();self.fast_clock(chat)
+        chat.bot.conversation_command_help=lambda text:'/modele a été retirée. Utilise /settings.'
+        message=self.message(content='Haddock, comment utiliser /modele ?')
+        chat.accept(message,False);await chat.task
+        self.assertIn('/settings',self.spoken_reply(message))
+        chat.brain.decide.assert_not_called()
+        await chat.close()
+
+    async def test_inflight_provision_is_not_reported_as_exhausted_until_midnight(self):
+        chat=self.chat();self.fast_clock(chat)
+        chat.brain.budget=SimpleNamespace(snapshot=lambda:{'blocked':False,'remaining_tokens':0,'reserved_tokens':100})
+        chat.brain.decide.side_effect=BudgetExhausted()
+        message=self.message()
+        chat.accept(message,False)
+        await chat.task
+        reply=self.spoken_reply(message)
+        self.assertIn('appels en cours',reply)
+        self.assertNotIn('minuit',reply)
+        await chat.close()
+
     def message(self,**changes):
         data = dict(id=123,guild=SimpleNamespace(id=1),channel=SimpleNamespace(id=2,send=AsyncMock()),
             author=SimpleNamespace(id=4,bot=False,display_name='Camarade',roles=[SimpleNamespace(id=3)]),
@@ -27,16 +71,11 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
     def chat(self):
         bot = SimpleNamespace(user=SimpleNamespace(id=99),voice_samples=[],voice_probability=.5,
             token_value='fake',last_voice_sample=None,write_status=MagicMock())
-        chat = LunaChat.__new__(LunaChat)
-        chat.bot,chat.data,chat.config_loader = bot,Path('/no-access'),lambda:{}
-        chat.brain = SimpleNamespace(decide=MagicMock(return_value={'action':'text','reply':'À bord !','sample_id':'none'}))
-        chat.model_lock = asyncio.Lock()
-        chat.debug_enabled = True
-        chat.memory,chat.cadence = ChatMemory(),ChatCadence()
-        chat.pending_direct = chat.pending_ambient = chat.task = None
-        chat.closed,chat.sequence = False,0
-        chat.retry_after = 0
-        chat.clock,chat.sleep = time.monotonic,asyncio.sleep
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        brain = SimpleNamespace(decide=MagicMock(return_value={'action':'text','reply':'À bord !','sample_id':'none'}))
+        chat = LunaChat(bot,Path(directory.name),{'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'},
+                        lambda:{},journal=False,knowledge=False,brain=brain)
         return chat
 
     def spoken_reply(self,message):
@@ -70,7 +109,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         chat = self.chat()
         message = self.message()
         chat.accept(message,False)
-        next_message = self.message(id=124,content='Haddock, raconte quelque chose !')
+        next_message = self.message(id=124,content='Une précision : le projet AAIT.',reference=SimpleNamespace(message_id=123,resolved=None))
         chat.accept(next_message,False)
         await chat.task
         message.reply.assert_not_awaited()
@@ -108,7 +147,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         message = self.message(id=123456789012345678,content='Haddock, '+private,
             created_at=datetime.now(timezone.utc)-timedelta(milliseconds=50),
             author=SimpleNamespace(id=987654321012345678,display_name='PRIVATE_SPEAKER'))
-        def decide(*args):
+        def decide(*args,**kwargs):
             clock[0] += 0.25
             return {'action':'text','reply':private,'sample_id':'none'}
         async def reply(*args,**kwargs):
@@ -126,7 +165,8 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         serialized = json.dumps(timing)
         for value in (private,'PRIVATE_SPEAKER','123456789012345678','987654321012345678'):
             self.assertNotIn(value,serialized)
-        self.assertEqual(set(timing),{'mode','queue_ms','model_ms','delivery_ms','total_ms','gateway_ms','checked_utc'})
+        self.assertEqual(timing['first_useful_ms'],450.0)
+        self.assertEqual(timing['retrieval_ms'],0.0)
         await chat.close()
 
     async def test_typing_spans_direct_facts_and_model_but_stops_before_reply(self):
@@ -134,10 +174,10 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.fast_clock(chat)
         message = self.message()
         manager,state = self.typing_context(message)
-        async def facts():
+        async def facts(snapshot,profile=None):
             self.assertTrue(state.active)
             return 'synthetic facts'
-        def decide(*args):
+        def decide(*args,**kwargs):
             self.assertTrue(state.active)
             return {'action':'text','reply':'Réponse synthétique.','sample_id':'none'}
         async def reply(*args,**kwargs):
@@ -202,7 +242,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         message = self.message()
         manager,state = self.typing_context(message)
         facts_started = asyncio.Event()
-        async def facts():
+        async def facts(snapshot,profile=None):
             facts_started.set()
             await asyncio.Event().wait()
         chat.facts = facts
@@ -240,7 +280,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scope_filters_precede_any_ai_context_collection(self):
         config = {'discord':{'guild_id':'1','channel_id':'2','role_ids':['3'],
-            'application_id':'99','luna':{'enabled':True}}}
+            'application_id':'99','luna':{'enabled':True,'provider':'commandcode','model':'deepseek/deepseek-v4.1-flash'}}}
         with tempfile.TemporaryDirectory() as directory,patch('courswatch.discord_app.bot.configuration',return_value=config), \
              patch('courswatch.discord_app.bot.DATA',Path(directory)),patch('courswatch.conversation.brain.read_api_key',return_value='fake'):
             bot = CourseBot('fake')
@@ -317,7 +357,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(message.channel.send.await_args.kwargs['allowed_mentions'].roles)
         chat.bot.last_voice_sample = None
         with patch('courswatch.conversation.chat.random.random',return_value=.1), \
-             patch('courswatch.conversation.chat.send_voice_message',side_effect=VoiceMessageError('unavailable')):
+             patch('courswatch.conversation.chat.send_voice_message',side_effect=VoiceMessageError('Discord voice HTTP 400')):
             await chat.deliver(message,choice,True)
             self.assertEqual(self.spoken_reply(message),choice['reply'])
         await chat.close()
@@ -374,5 +414,376 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(987,chat.memory.bot_ids)
         await chat.close()
 
+
+    async def test_two_authors_keep_independent_requests_and_attributed_snapshots(self):
+        chat=self.chat();self.fast_clock(chat)
+        alice=self.message(content='Haddock, date de AAIT ?')
+        bob=self.message(id=124,content='Haddock, explique BDFA.',
+            author=SimpleNamespace(id=5,display_name='Camarade'))
+        chat.accept(alice,False);chat.accept(bob,False)
+        await chat.task
+        alice.reply.assert_awaited_once();bob.reply.assert_awaited_once()
+        self.assertEqual(chat.brain.decide.call_count,2)
+        first,second=chat.brain.decide.call_args_list
+        self.assertEqual(first.kwargs['request'].requester_ids,('4',))
+        self.assertEqual(second.kwargs['request'].requester_ids,('5',))
+        self.assertNotIn('BDFA',str(first.args[0]))
+        self.assertNotIn('AAIT',str(second.args[0]))
+        await chat.close()
+
+    async def test_same_author_independent_topics_are_not_overwritten(self):
+        chat=self.chat();self.fast_clock(chat)
+        first=self.message(content='Haddock, date AAIT ?')
+        second=self.message(id=124,content='Haddock, où est BDFA ?')
+        chat.accept(first,False);chat.accept(second,False)
+        await chat.task
+        first.reply.assert_awaited_once();second.reply.assert_awaited_once()
+        self.assertEqual(chat.brain.decide.call_count,2)
+        await chat.close()
+
+    async def test_facts_read_snapshot_before_other_author_arrives(self):
+        chat=self.chat();self.fast_clock(chat)
+        entered=asyncio.Event();release=asyncio.Event()
+        goals=[]
+        async def facts(snapshot,profile=None):
+            goals.append(snapshot.goal)
+            if len(goals)==1:
+                entered.set();await release.wait()
+            return ''
+        chat.facts=facts
+        alice=self.message(content='Haddock, date AAIT ?')
+        bob=self.message(id=124,content='Haddock, où est BDFA ?',author=SimpleNamespace(id=5,display_name='Bob'))
+        chat.accept(alice,False)
+        await asyncio.wait_for(entered.wait(),1)
+        chat.accept(bob,False);release.set()
+        await chat.task
+        self.assertEqual(goals,['Haddock, date AAIT ?','Haddock, où est BDFA ?'])
+        self.assertEqual(chat.brain.decide.call_args_list[0].kwargs['request'].reply_target_id,'123')
+        alice.reply.assert_awaited_once();bob.reply.assert_awaited_once()
+        await chat.close()
+
+    async def test_relevant_edit_during_generation_retries_once_before_publication(self):
+        from dataclasses import replace
+        from courswatch.conversation.ingestion import envelope_from_message
+        import threading
+        chat=self.chat();self.fast_clock(chat)
+        started=asyncio.Event();release=threading.Event();loop=asyncio.get_running_loop()
+        calls=[]
+        def decide(context,*args,**kwargs):
+            calls.append(context)
+            if len(calls)==1:
+                loop.call_soon_threadsafe(started.set)
+                release.wait(timeout=2)
+            return {'action':'text','reply':context[-1]['text'],'sample_id':'none'}
+        chat.brain.decide.side_effect=decide
+        message=self.message(content='Haddock, parle du premier sujet.')
+        chat.accept(message,False)
+        await asyncio.wait_for(started.wait(),1)
+        edited=replace(envelope_from_message(message),text='Haddock, parle du sujet corrigé.',revision=2,
+                       edited_at=datetime.now(timezone.utc).isoformat())
+        chat.edited(edited);release.set()
+        await chat.task
+        self.assertEqual(len(calls),2)
+        message.reply.assert_awaited_once()
+        self.assertIn('corrigé',self.spoken_reply(message))
+        await chat.close()
+
+    async def test_human_answer_during_generation_prevents_late_reply(self):
+        import threading
+        chat=self.chat();self.fast_clock(chat)
+        started=asyncio.Event();release=threading.Event();loop=asyncio.get_running_loop()
+        def decide(*args,**kwargs):
+            loop.call_soon_threadsafe(started.set);release.wait(timeout=2)
+            return {'action':'text','reply':'Réponse devenue inutile.','sample_id':'none'}
+        chat.brain.decide.side_effect=decide
+        message=self.message();chat.accept(message,False)
+        await asyncio.wait_for(started.wait(),1)
+        human=self.message(id=124,content='Voici la réponse complète.',author=SimpleNamespace(id=5,display_name='Bob'),
+            reference=SimpleNamespace(message_id=123,resolved=None))
+        chat.accept(human,False);release.set()
+        await chat.task
+        message.reply.assert_not_awaited();human.reply.assert_not_awaited()
+        self.assertEqual(chat.brain.decide.call_count,1)
+        await chat.close()
+
+    async def test_deletion_during_generation_prevents_publication(self):
+        from courswatch.conversation.contracts import Scope
+        import threading
+        chat=self.chat();self.fast_clock(chat)
+        started=asyncio.Event();release=threading.Event();loop=asyncio.get_running_loop()
+        def decide(*args,**kwargs):
+            loop.call_soon_threadsafe(started.set);release.wait(timeout=2)
+            return {'action':'text','reply':'Source supprimée.','sample_id':'none'}
+        chat.brain.decide.side_effect=decide
+        message=self.message();chat.accept(message,False)
+        await asyncio.wait_for(started.wait(),1)
+        chat.deleted(Scope('1','2'),'123');release.set()
+        await chat.task
+        message.reply.assert_not_awaited()
+        self.assertEqual(chat.brain.decide.call_count,1)
+        await chat.close()
+
+    async def test_async_authorization_cannot_allow_a_correction_received_during_check(self):
+        from courswatch.conversation.contracts import Scope
+        chat=self.chat();self.fast_clock(chat)
+        async def allowed(message):
+            chat.deleted(Scope('1','2'),str(message.id))
+            return True
+        chat.bot.conversation_publish_allowed=allowed
+        message=self.message();chat.accept(message,False)
+        await chat.task
+        message.reply.assert_not_awaited()
+        await chat.close()
+
+    async def test_wake_event_interrupts_ambient_wait_without_waiting_for_timer(self):
+        chat=self.chat()
+        waiting=asyncio.create_task(chat._wait(1000))
+        await asyncio.sleep(0)
+        chat._wake.set()
+        await asyncio.wait_for(waiting,1)
+        await chat.close()
+
+    async def test_backfill_and_gratitude_are_observed_without_paid_call(self):
+        from dataclasses import replace
+        from courswatch.conversation.ingestion import envelope_from_message
+        chat=self.chat()
+        message=self.message();envelope=replace(envelope_from_message(message),ingestion_mode='backfill')
+        decision=chat.observe(envelope,message,True)
+        self.assertEqual(decision.reason_code,'historical_ingestion')
+        thanks=self.message(id=124,content='Merci Haddock !')
+        decision=chat.accept(thanks,False)
+        self.assertEqual(decision.reason_code,'acknowledgement')
+        self.assertIsNone(chat.task)
+        chat.brain.decide.assert_not_called()
+        await chat.close()
+
+    async def test_image_unavailable_does_not_pretend_text_model_saw_it(self):
+        from dataclasses import replace
+        from courswatch.conversation.contracts import MediaDescriptor
+        from courswatch.conversation.ingestion import envelope_from_message
+        chat=self.chat();self.fast_clock(chat)
+        message=self.message(content='Haddock, que montre cette image ?')
+        envelope=replace(envelope_from_message(message),media=(MediaDescriptor('img','image','https://cdn.discordapp.com/attachments/1/2/f.png'),))
+        chat.observe(envelope,message,True)
+        await chat.task
+        self.assertIn('capacités actuellement disponibles',self.spoken_reply(message))
+        chat.brain.decide.assert_not_called()
+        await chat.close()
+
+    async def test_source_clock_expires_live_requests_without_affecting_memory(self):
+        from dataclasses import replace
+        from courswatch.conversation.ingestion import envelope_from_message
+        chat=self.chat()
+        fixed=datetime(2026,11,17,tzinfo=timezone.utc);chat.now=lambda:fixed
+        message=self.message()
+        envelope=replace(envelope_from_message(message,now=fixed),created_at=(fixed-timedelta(days=7)).isoformat())
+        decision=chat.observe(envelope,message,True)
+        self.assertEqual(decision.reason_code,'expired_request')
+        self.assertIsNone(chat.task)
+        self.assertEqual(chat.memory.context()[-1]['text'],message.content)
+        await chat.close()
+
+
+    async def test_uncertain_voice_upload_never_falls_back_to_duplicate_text(self):
+        from courswatch.conversation.voice import VoiceMessageError
+        chat=self.chat();message=self.message()
+        chat.bot.voice_samples=[SimpleNamespace(id='cafe')]
+        with patch('courswatch.conversation.chat.random.random',return_value=.1), \
+             patch('courswatch.conversation.chat.send_voice_message',side_effect=VoiceMessageError('Discord voice unavailable')):
+            receipt=await chat.deliver(message,{'action':'sample','reply':'Paroles de secours.','sample_id':'cafe'},True)
+        self.assertIsNone(receipt)
+        message.reply.assert_not_awaited()
+        self.assertEqual(chat.bot.write_status.call_args.kwargs['last_voice_error']['outcome'],'uncertain')
+        await chat.close()
+
+    async def test_journal_survives_restart_without_dedupe_collision_or_footer_history(self):
+        from courswatch.memory import Journal
+        from courswatch.conversation.contracts import Scope
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        journal=Journal(Path(directory.name)/'conversation.db')
+        first_chat=self.chat();first_chat.journal=journal;self.fast_clock(first_chat)
+        first=self.message();first_chat.accept(first,False);await first_chat.task
+        stored=journal.active(Scope('1','2'),'456')
+        self.assertTrue(stored.is_bot)
+        self.assertEqual(stored.reply_to_message_id,'123')
+        self.assertEqual(stored.text,'À bord !')
+        self.assertNotIn('TTFT',stored.text)
+        await first_chat.close()
+        second_chat=self.chat();second_chat.journal=journal;self.fast_clock(second_chat)
+        second=self.message(id=124,reply=AsyncMock(return_value=SimpleNamespace(id=457)))
+        second_chat.accept(second,False);await second_chat.task
+        second.reply.assert_awaited_once()
+        self.assertEqual(second_chat.brain.decide.call_count,1)
+        self.assertTrue(journal.active(Scope('1','2'),'457').is_bot)
+        second_chat.accept(second,False)
+        self.assertEqual(second_chat.brain.decide.call_count,1)
+        await second_chat.close()
+
+    async def test_missing_course_proof_produces_local_explicit_absence(self):
+        from courswatch.conversation.contracts import EvidenceBundle
+        chat=self.chat();self.fast_clock(chat)
+        chat.knowledge=SimpleNamespace(query=MagicMock(return_value=EvidenceBundle(coverage='Aucune source probante.')),
+            revalidate=MagicMock(return_value=True))
+        message=self.message(content='Haddock, quelle date pour le projet AAIT ?')
+        chat.accept(message,False);await chat.task
+        self.assertEqual(self.spoken_reply(message),'Aucune source probante.')
+        chat.brain.decide.assert_not_called()
+        await chat.close()
+
+    async def test_source_revoked_during_last_evidence_check_prevents_send(self):
+        from courswatch.conversation.contracts import EvidenceBundle, Evidence, Scope
+        chat=self.chat();self.fast_clock(chat)
+        evidence=Evidence('proof','source',Scope('1','2'),'official','https://example.invalid/course','AAIT',
+            'Source synthétique.','v1',datetime.now(timezone.utc).isoformat())
+        chat.knowledge=SimpleNamespace(query=MagicMock(return_value=EvidenceBundle(evidence=(evidence,))),
+            revalidate=MagicMock(return_value=True))
+        chat.bot.conversation_evidence_allowed=AsyncMock(return_value=False)
+        message=self.message(content='Haddock, la date de AAIT ?')
+        chat.accept(message,False);await chat.task
+        message.reply.assert_not_awaited()
+        chat.brain.decide.assert_not_called()
+        self.assertEqual(chat.knowledge.query.call_count,2)
+        await chat.close()
+
+    async def test_direct_queue_overflow_is_explicit_without_model_or_overwrite(self):
+        chat=self.chat();self.fast_clock(chat)
+        chat.coordinator.max_pending=1
+        first=self.message(content='Haddock, explique AAIT.')
+        second=self.message(id=124,content='Haddock, explique BDFA.')
+        chat.accept(first,False)
+        decision=chat.accept(second,False)
+        self.assertEqual(decision.reason_code,'queue_full')
+        await chat.task
+        await chat._overflow_task
+        first.reply.assert_awaited_once();second.reply.assert_awaited_once()
+        self.assertIn('demandes',self.spoken_reply(second))
+        self.assertEqual(chat.brain.decide.call_count,1)
+        await chat.close()
+
+    async def test_evidence_revoked_during_last_publish_await_is_checked_synchronously(self):
+        from courswatch.conversation.contracts import EvidenceBundle, Evidence, Scope
+        chat=self.chat();self.fast_clock(chat)
+        permitted=[True]
+        evidence=Evidence('proof','source',Scope('1','2'),'official','https://example.invalid/course','AAIT',
+            'Source synthétique.','v1',datetime.now(timezone.utc).isoformat())
+        chat.knowledge=SimpleNamespace(query=MagicMock(return_value=EvidenceBundle(evidence=(evidence,))),
+            revalidate=MagicMock(side_effect=lambda *args:permitted[0]))
+        async def publish_allowed(message):
+            permitted[0]=False
+            return True
+        chat.bot.conversation_publish_allowed=publish_allowed
+        message=self.message(content='Haddock, la date de AAIT ?')
+        chat.accept(message,False);await chat.task
+        message.reply.assert_not_awaited()
+        self.assertGreaterEqual(chat.knowledge.revalidate.call_count,3)
+        self.assertEqual(chat.brain.decide.call_count,0)
+        await chat.close()
+
+    async def test_three_fragments_of_incomplete_request_coalesce_with_bounded_wait(self):
+        chat=self.chat();self.fast_clock(chat)
+        first=self.message(content='Haddock, je voulais savoir…')
+        second=self.message(id=124,content='Le projet AAIT')
+        third=self.message(id=125,content='La date ?')
+        chat.accept(first,False);chat.accept(second,False);chat.accept(third,False)
+        await chat.task
+        first.reply.assert_not_awaited();second.reply.assert_not_awaited();third.reply.assert_awaited_once()
+        self.assertEqual(chat.brain.decide.call_count,1)
+        snapshot=chat.brain.decide.call_args.kwargs['request']
+        self.assertEqual(snapshot.trigger_message_ids,('123','124','125'))
+        self.assertEqual(snapshot.reply_target_id,'125')
+        await chat.close()
+
+    async def test_old_bot_reply_loaded_from_durable_journal_beyond_warm_window(self):
+        from courswatch.memory import Journal
+        from courswatch.conversation.contracts import MessageEnvelope, Scope
+        fixed=datetime(2026,11,17,12,tzinfo=timezone.utc)
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        journal=Journal(Path(directory.name)/'conversation.db',now=lambda:fixed)
+        scope=Scope('1','2')
+        journal.ingest(MessageEnvelope(scope,'42','99','Haddock','Une explication ancienne.',
+            (fixed-timedelta(days=7)).isoformat(),is_bot=True))
+        for index in range(31):
+            journal.ingest(MessageEnvelope(scope,str(index+100),'4','Camarade','Message humain récent.',
+                (fixed-timedelta(minutes=31-index)).isoformat()))
+        self.assertNotIn('42',[row.message_id for row in journal.recent(scope,30)])
+        chat=self.chat();chat.journal=journal;chat.now=lambda:fixed;self.fast_clock(chat)
+        chat.settings['participation_mode']='direct_only'
+        message=self.message(id=999,content='Tu peux préciser ?',
+            reference=SimpleNamespace(message_id=42,channel_id=2,guild_id=1,
+                resolved=SimpleNamespace(author=SimpleNamespace(id=99))))
+        chat.accept(message,False);await chat.task
+        message.reply.assert_awaited_once()
+        snapshot=chat.brain.decide.call_args.kwargs['request']
+        self.assertEqual(snapshot.reply_target_id,'999')
+        self.assertEqual([row.message_id for row in snapshot.messages],['42','999'])
+        self.assertTrue(snapshot.messages[0].is_bot)
+        await chat.close()
+
+    async def test_prior_media_observation_keeps_date_author_limitations_and_readable_ocr(self):
+        from dataclasses import replace
+        from courswatch.conversation.contracts import MediaDescriptor
+        from courswatch.conversation.ingestion import envelope_from_message
+        chat=self.chat();self.fast_clock(chat)
+        message=self.message(content='Haddock, décris cette image.')
+        envelope=replace(envelope_from_message(message),media=(MediaDescriptor('img','image','https://cdn.discordapp.com/attachments/1/2/f.png'),))
+        observation={'status':'ready','message_id':'123','media_id':'img','description':'Un panneau bleu.',
+            'analysed_at':'2026-11-10T10:00:00+00:00','prior_observation':True,
+            'cache_hit':True,'metrics':{'media_fetch_ms':0,'media_decode_ms':0,'vision_ms':0},
+            'ocr':[{'text':'TEST-17','at_ms':1200,'quality':'uncertain'}],
+            'animation':'Le panneau apparaît à la fin.','limitations':['Trois images échantillonnées.']}
+        chat.media=SimpleNamespace(submit=MagicMock(),enrich=AsyncMock(return_value=(observation,)),close=AsyncMock())
+        chat.observe(envelope,message,True);await chat.task
+        text=self.spoken_reply(message)
+        for value in ('Observation antérieure','média non revérifié','Camarade','10/11/2026','TEST-17','incertain à 1,20 s','Trois images échantillonnées.'):
+            self.assertIn(value,text)
+        self.assertNotIn("{'text':",text)
+        timing=chat.bot.write_status.call_args.kwargs['last_chat_timing']
+        self.assertEqual({name:timing[name] for name in ('media_fetch_ms','media_decode_ms','vision_ms','media_cache_hits','media_ready')},
+                         {'media_fetch_ms':0,'media_decode_ms':0,'vision_ms':0,'media_cache_hits':1,'media_ready':1})
+        self.assertNotIn('panneau',json.dumps(timing))
+        chat.brain.decide.assert_not_called()
+        await chat.close()
+
+    async def test_large_media_description_is_not_cut_mid_observation_or_citation(self):
+        from dataclasses import replace
+        from courswatch.conversation.contracts import MediaDescriptor
+        from courswatch.conversation.ingestion import envelope_from_message
+        chat=self.chat();self.fast_clock(chat)
+        message=self.message(content='Haddock, décris ce GIF.')
+        envelope=replace(envelope_from_message(message),media=(MediaDescriptor('img','animation','https://cdn.discordapp.com/attachments/1/2/f.gif'),))
+        observation={'status':'ready','message_id':'123','media_id':'img','description':'Un long descriptif. '*160,
+            'ocr':[],'animation':'Fin.','limitations':['Échantillon borné.']}
+        chat.media=SimpleNamespace(submit=MagicMock(),enrich=AsyncMock(return_value=(observation,)),close=AsyncMock())
+        chat.observe(envelope,message,True);await chat.task
+        text=self.spoken_reply(message)
+        self.assertIn('trop longue',text)
+        self.assertNotIn('Un long descriptif',text)
+        self.assertNotIn('[Image](',text)
+        chat.brain.decide.assert_not_called()
+        await chat.close()
+
+    async def test_prior_media_view_validates_against_canonical_persisted_observation(self):
+        from dataclasses import replace
+        from courswatch.memory import Journal
+        from courswatch.knowledge import KnowledgeService
+        from courswatch.conversation.contracts import MediaDescriptor
+        from courswatch.conversation.ingestion import envelope_from_message
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        chat=self.chat();self.fast_clock(chat)
+        journal=Journal(Path(directory.name)/'conversation.db');chat.journal=journal
+        chat.knowledge=KnowledgeService(directory.name,{},journal=journal)
+        message=self.message(content='Haddock, décris cette image.')
+        envelope=replace(envelope_from_message(message),media=(MediaDescriptor('img','image','https://cdn.discordapp.com/attachments/1/2/f.png'),))
+        canonical={'status':'ready','message_id':'123','media_id':'img','description':'Un panneau bleu.',
+            'analysed_at':'2026-11-10T10:00:00+00:00','ocr':[],'animation':'','limitations':[],'cache_hit':False}
+        view={**canonical,'cache_hit':True,'prior_observation':True,'metrics':{'vision_ms':0}}
+        chat.media=SimpleNamespace(submit=MagicMock(),enrich=AsyncMock(return_value=(view,)),close=AsyncMock())
+        chat.observe(envelope,message,True)
+        journal.save_observation(envelope.scope,envelope.message_id,1,'img',canonical)
+        await chat.task
+        message.reply.assert_awaited_once()
+        self.assertIn('Un panneau bleu.',self.spoken_reply(message))
+        self.assertEqual(chat.brain.decide.call_count,0)
+        await chat.close()
 
 if __name__ == '__main__': unittest.main()

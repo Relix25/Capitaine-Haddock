@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Discord commands and private detail buttons; outbound Gateway only."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import random
+import re
 import signal
 import sqlite3
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 import discord
@@ -23,6 +26,8 @@ from courswatch.discord_app.emojis import button_emoji, icon
 from courswatch.conversation.easter_egg import HaddockEasterEgg, triggered
 from courswatch.conversation.voice import load_samples, choose_sample, send_voice_message, VoiceMessageError
 from courswatch.conversation.chat import LunaChat
+from courswatch.conversation.contracts import Scope, utc_iso
+from courswatch.conversation.ingestion import envelope_from_message
 from courswatch.discord_app.settings_ui import SettingsModal, authorize_settings
 from courswatch.discord_app.presentation import compact_embed, interaction_allowed, private_details, DETAIL_CUSTOM_ID
 from courswatch.discord_app.responses import prepare_private, send_private
@@ -147,21 +152,40 @@ class CourseBot(discord.Client):
         self.voice_samples = load_samples() if self.voice_probability else []
         self.last_voice_sample = None
         self.luna = LunaChat(self,DATA,ai,configuration) if self.luna_enabled else None
+        if self.luna:
+            from courswatch.media.service import MediaService
+            self.luna.media = MediaService(DATA, self.luna.journal,
+                describer=self.luna.brain.describe_media, profile_resolver=self.luna.brain.vision_profile,
+                authorize=self.media_occurrence_allowed, refresh_source=self.refresh_media_source)
+        self.history_task = None
+        self.retention_task = None
+        self.status_lock = threading.RLock()
         self.child = None
         self.commands_registered = False
         self.register_commands()
 
     def write_status(self, **extra):
-        path = DATA / 'reports/bot-status.json'
-        previous = read_json(path)
-        previous.update(extra)
-        previous['process_id'] = os.getpid()
-        previous['checked_utc'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        path.parent.mkdir(mode=0o700,exist_ok=True)
-        pending = path.with_suffix('.pending')
-        pending.write_text(json.dumps(previous,ensure_ascii=False,indent=2))
-        pending.chmod(0o600)
-        os.replace(pending,path)
+        # Writers from Gateway and background work share one read/modify/write lock.
+        with self.status_lock:
+            path = DATA / 'reports/bot-status.json'
+            previous = read_json(path)
+            previous.update(extra)
+            previous['process_id'] = os.getpid()
+            previous['checked_utc'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            path.parent.mkdir(mode=0o700,exist_ok=True)
+            pending = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                                 prefix='.bot-status-', delete=False) as stream:
+                    pending = Path(stream.name)
+                    pending.chmod(0o600)
+                    json.dump(previous, stream, ensure_ascii=False, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(pending,path)
+            finally:
+                if pending is not None:
+                    pending.unlink(missing_ok=True)
 
     def finish_manual_scan(self, status, **extra):
         previous = read_json(DATA / 'reports/bot-status.json').get('last_manual_scan',{})
@@ -210,6 +234,10 @@ class CourseBot(discord.Client):
         guild = self.get_guild(int(cfg['guild_id']))
         channel = guild.get_channel(int(cfg['channel_id'])) if guild else None
         permissions = channel.permissions_for(guild.me) if channel and guild.me else None
+        if self.luna and channel and (self.history_task is None or self.history_task.done()):
+            self.history_task = asyncio.create_task(self.backfill_conversations(channel))
+        if self.luna and (self.retention_task is None or self.retention_task.done()):
+            self.retention_task = asyncio.create_task(self.conversation_maintenance())
         usable = bool(permissions and permissions.view_channel and permissions.send_messages and permissions.embed_links)
         role = guild.get_role(int(cfg['role_ids'][0])) if guild else None
         ping = bool(role and permissions and (role.mentionable or permissions.mention_everyone))
@@ -239,6 +267,302 @@ class CourseBot(discord.Client):
         metadata = {'event':event_method,'error_type':type(error).__name__,'checked_utc':stamp()}
         self.write_status(last_callback_error=metadata)
         print(json.dumps({'callback_failed':metadata}),flush=True)
+
+    def conversation_scope(self):
+        cfg = configuration()['discord']
+        return Scope(str(cfg['guild_id']), str(cfg['channel_id']))
+
+    def conversation_command_help(self, question):
+        """Answer command questions from today's registry rather than old chat."""
+        names=re.findall(r'/([\w-]+)', question.casefold())
+        generic=bool(re.search(r'\b(?:quelles?|liste|aide|utiliser)\b.*\bcommandes?\b',question,re.I))
+        if names and set(names)=={'jurons'} and not re.search(r'\b(comment|utiliser|aide|commande|signifie)\b',question,re.I):
+            return ''  # Preserve conversational tone preferences.
+        if not names and not generic:
+            return ''
+        registry={command.name:command for command in self.tree.get_commands(guild=self.scope)}
+        lines=[]
+        for name in names or list(registry):
+            if name in ('modele','modèle'):
+                lines.append('/modele a été retirée. Utilise /settings pour régler le modèle et le mode debug (administrateurs).')
+            elif name in registry:
+                lines.append('/'+name+' : '+registry[name].description)
+            elif name == 'jurons':
+                lines.append('/jurons exprime une préférence dans un message adressé à Haddock ; ce n’est pas une commande Discord enregistrée.')
+            else:
+                lines.append('/'+name+' n’est pas une commande Discord actuellement enregistrée.')
+        selected=[]
+        for line in dict.fromkeys(lines):
+            if len('\n'.join([*selected,line]))<=1700:
+                selected.append(line)
+        return '\n'.join(selected)
+
+    def media_occurrence_allowed(self, envelope):
+        if envelope.scope != self.conversation_scope():
+            return False
+        channel = self.get_channel(int(envelope.scope.channel_id))
+        guild = self.get_guild(int(envelope.scope.guild_id))
+        if channel is None or guild is None or guild.me is None:
+            return False
+        permissions = channel.permissions_for(guild.me)
+        return bool(permissions.view_channel)
+
+    async def refresh_media_source(self, envelope, media):
+        if not self.media_occurrence_allowed(envelope):
+            return None
+        channel = self.get_channel(int(envelope.scope.channel_id))
+        try:
+            message = await channel.fetch_message(int(envelope.message_id))
+        except discord.NotFound:
+            self.luna.deleted(envelope.scope, envelope.message_id)
+            return None
+        except (discord.HTTPException, OSError):
+            return None
+        member = await self.conversation_rest_member(message)
+        if member is None:
+            return None
+        normalized = envelope_from_message(message, author=member)
+        if normalized.text != envelope.text or normalized.edited_at != envelope.edited_at:
+            self.luna.edited(normalized)
+            return None
+        return next((item for item in normalized.media if item.media_id == media.media_id), None)
+
+    def conversation_message_allowed(self, message):
+        if (message.guild is None or getattr(message.author, 'bot', False)
+                or getattr(message, 'webhook_id', None)):
+            return False
+        cfg = configuration()['discord']
+        roles = [role.id for role in getattr(message.author, 'roles', ())]
+        return interaction_allowed(message.guild.id, message.channel.id, roles, cfg)
+
+    async def conversation_rest_member(self, message, cache=None):
+        """REST messages can contain User without roles when members intent is off."""
+        if (message.guild is None or getattr(message.author, 'bot', False)
+                or getattr(message, 'webhook_id', None)):
+            return None
+        cfg = configuration()['discord']
+        if Scope(str(message.guild.id), str(message.channel.id)) != self.conversation_scope():
+            return None
+        key = (str(message.guild.id), str(message.author.id))
+        if cache is not None and key in cache:
+            member = cache[key]
+        else:
+            fetch = getattr(message.guild, 'fetch_member', None)
+            try:
+                member = await fetch(message.author.id) if callable(fetch) else message.author
+            except (discord.HTTPException, OSError):
+                member = None
+            if cache is not None:
+                cache[key] = member
+        if member is None or not interaction_allowed(message.guild.id, message.channel.id,
+                [role.id for role in getattr(member, 'roles', ())], cfg):
+            return None
+        return member
+
+    async def conversation_publish_allowed(self, message):
+        """Recheck the requester, configured audience and bot access before commit."""
+        if not self.conversation_message_allowed(message):
+            return False
+        guild, channel = message.guild, message.channel
+        try:
+            fetch_member = getattr(guild, 'fetch_member', None)
+            if callable(fetch_member):
+                member = await fetch_member(message.author.id)
+                cfg = configuration()['discord']
+                if not interaction_allowed(guild.id, channel.id,
+                        [role.id for role in getattr(member, 'roles', ())], cfg):
+                    return False
+            if getattr(guild, 'me', None) is not None and callable(getattr(channel, 'permissions_for', None)):
+                permissions = channel.permissions_for(guild.me)
+                if not (permissions.view_channel and permissions.send_messages):
+                    return False
+            # The current source must still exist; raw delete events can be delayed.
+            fetch = getattr(channel, 'fetch_message', None)
+            if callable(fetch):
+                current = await fetch(message.id)
+                member = await self.conversation_rest_member(current)
+                if member is None:
+                    return False
+                active = self.luna.journal.active(self.conversation_scope(), str(message.id))
+                if active is None or active.deleted:
+                    return False
+                normalized = envelope_from_message(current, author=member)
+                if (normalized.text != active.text or normalized.edited_at != active.edited_at
+                        or tuple(m.media_id for m in normalized.media) != tuple(m.media_id for m in active.media)):
+                    self.luna.edited(normalized)
+                    return False
+            return True
+        except (discord.HTTPException, OSError):
+            return False
+
+    async def conversation_evidence_allowed(self, bundle):
+        """Reload cited chat sources just before sending; history can miss raw events."""
+        scope = self.conversation_scope()
+        channel = self.get_channel(int(scope.channel_id))
+        for item in bundle.evidence:
+            if item.scope != scope:
+                return False
+            if item.kind not in ('conversation', 'media_observation'):
+                continue
+            if channel is None or not callable(getattr(channel, 'fetch_message', None)):
+                return False
+            identity = item.source_id
+            if item.kind == 'media_observation':
+                try:
+                    parts = json.loads(identity)
+                    if not isinstance(parts, list) or len(parts) != 2:
+                        return False
+                    identity = str(parts[0])
+                except (ValueError, TypeError):
+                    return False
+            try:
+                current = await channel.fetch_message(int(identity))
+            except discord.NotFound:
+                self.luna.deleted(scope, str(identity))
+                return False
+            except (discord.HTTPException, OSError, ValueError):
+                return False
+            member = await self.conversation_rest_member(current)
+            if member is None:
+                return False
+            active = self.luna.journal.active(scope, str(identity))
+            normalized = envelope_from_message(current, author=member)
+            expected_revision = item.version.split(':', 1)[0] if item.kind == 'media_observation' else item.version
+            if (active is None or str(active.revision) != expected_revision or normalized.text != active.text
+                    or normalized.edited_at != active.edited_at
+                    or tuple(m.media_id for m in normalized.media) != tuple(m.media_id for m in active.media)):
+                self.luna.edited(normalized)
+                return False
+        return True
+
+    async def backfill_conversations(self, channel):
+        """Bounded history ingestion only; never enqueue historical questions."""
+        cfg = configuration()['discord']
+        settings = cfg.get('luna', {}).get('memory', {})
+        if not settings.get('backfill_enabled', True):
+            return
+        scope = self.conversation_scope()
+        if str(channel.id) != scope.channel_id:
+            return
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=max(7, min(90, int(settings.get('backfill_days', 7)))))
+        limit = max(1, min(10000, int(settings.get('backfill_limit', 1000))))
+        journal = self.luna.journal
+        cursor = journal.coverage(scope).get('cursor')
+        after = start
+        if cursor:
+            try:
+                saved_cursor = json.loads(cursor)
+                cursor_time = datetime.fromisoformat(saved_cursor['created_at'])
+                if start <= cursor_time < end:
+                    start = cursor_time
+                    after = discord.Object(id=int(saved_cursor['message_id']))
+                    end = min(end, datetime.fromisoformat(saved_cursor['window_end']))
+            except (ValueError, TypeError, KeyError):
+                pass
+        seen, count, members, last_message, authorization_gap = set(), 0, {}, None, False
+        try:
+            guild = self.get_guild(int(scope.guild_id))
+            if guild and guild.me:
+                permissions = channel.permissions_for(guild.me)
+                if not (permissions.view_channel and permissions.read_message_history):
+                    self.write_status(conversation_backfill={'status':'unavailable','reason':'history_permission'})
+                    return
+            async for message in channel.history(limit=limit, after=after, before=end, oldest_first=True):
+                # Config may change while a long backfill is running.
+                if self.conversation_scope() != scope:
+                    return
+                count += 1
+                last_message = message
+                seen.add(str(message.id))
+                member = await self.conversation_rest_member(message, members)
+                member_key = (str(message.guild.id), str(message.author.id))
+                if member_key in members and members[member_key] is None:
+                    authorization_gap = True
+                if member is not None:
+                    envelope = envelope_from_message(message, ingestion_mode='backfill', author=member)
+                    self.luna.observe(envelope, message=None, mentioned=False)
+            complete = count < limit and not authorization_gap
+            self.write_status(conversation_backfill={'status':'complete' if complete else 'partial',
+                'messages_seen':count,'start_utc':utc_iso(start),'end_utc':utc_iso(end),
+                'silent':True})
+            # Coverage API is supplied by the journal; missing ranges stay explicit.
+            record = getattr(journal, 'record_coverage', None)
+            if callable(record):
+                record(scope, utc_iso(start), utc_iso(end), complete=complete,
+                       reason='authorization' if authorization_gap else ('limit' if count == limit else ''))
+                if count == limit and last_message is not None and not authorization_gap:
+                    last_time = utc_iso(last_message.created_at)
+                    record(scope, utc_iso(start), last_time, complete=True)
+            if count == limit and last_message is not None and not authorization_gap:
+                journal.checkpoint(scope, cursor=json.dumps({'message_id':str(last_message.id),
+                    'created_at':utc_iso(last_message.created_at),'window_end':utc_iso(end)}))
+            elif complete:
+                journal.checkpoint(scope, cursor='')
+            if complete:
+                # Only a complete window can establish missing messages. The
+                # journal protects events ingested after this scan began.
+                # For a resumed page, the timestamp boundary can contain earlier
+                # snowflakes not read by this page: retain that boundary safely.
+                reconcile_start = start + timedelta(milliseconds=1) if isinstance(after, discord.Object) else start
+                journal.reconcile_window(scope, utc_iso(reconcile_start), utc_iso(end), seen)
+            journal.purge()
+        except (discord.HTTPException, OSError, ValueError, sqlite3.Error):
+            self.write_status(conversation_backfill={'status':'unavailable','reason':'history_fetch','silent':True})
+
+    async def conversation_maintenance(self):
+        """Apply local retention even when no new model analysis succeeds."""
+        while not self.is_closed() and self.luna:
+            try:
+                await asyncio.to_thread(self.luna.journal.purge)
+                if self.luna.media is not None:
+                    await asyncio.to_thread(self.luna.media.cache.purge)
+            except (OSError, sqlite3.Error):
+                self.write_status(conversation_retention={'status':'failed','checked_utc':stamp()})
+            await asyncio.sleep(3600)
+
+    async def on_raw_message_edit(self, payload):
+        if not self.luna or getattr(payload, 'guild_id', None) is None:
+            return
+        scope = Scope(str(payload.guild_id), str(payload.channel_id))
+        if scope != self.conversation_scope():
+            return
+        old = self.luna.journal.active(scope, str(payload.message_id))
+        if old is None or old.deleted:
+            return
+        channel = self.get_channel(int(scope.channel_id))
+        if channel is None:
+            return
+        try:
+            # Fetching preserves omitted fields in partial embed-only updates.
+            message = await channel.fetch_message(payload.message_id)
+        except discord.NotFound:
+            self.luna.deleted(scope, str(payload.message_id))
+            return
+        except (discord.HTTPException, OSError):
+            # Invalidate outstanding work when its source cannot be revalidated.
+            invalidate = getattr(self.luna, 'invalidate', None)
+            if callable(invalidate):
+                invalidate(scope, str(payload.message_id))
+            return
+        member = await self.conversation_rest_member(message)
+        if member is None:
+            self.luna.deleted(scope, str(payload.message_id))
+            return
+        self.luna.edited(envelope_from_message(message, author=member))
+
+    async def on_raw_message_delete(self, payload):
+        if self.luna and getattr(payload, 'guild_id', None) is not None:
+            scope = Scope(str(payload.guild_id), str(payload.channel_id))
+            if scope == self.conversation_scope():
+                self.luna.deleted(scope, str(payload.message_id))
+
+    async def on_raw_bulk_message_delete(self, payload):
+        if self.luna and getattr(payload, 'guild_id', None) is not None:
+            scope = Scope(str(payload.guild_id), str(payload.channel_id))
+            if scope == self.conversation_scope():
+                for identity in payload.message_ids:
+                    self.luna.deleted(scope, str(identity))
 
     async def on_message(self,message):
         if (not (self.easter_egg_enabled or self.luna_enabled) or message.guild is None or message.author.bot
@@ -403,6 +727,12 @@ class CourseBot(discord.Client):
                 pass
 
     async def close(self):
+        if self.retention_task and not self.retention_task.done():
+            self.retention_task.cancel()
+            await asyncio.gather(self.retention_task, return_exceptions=True)
+        if self.history_task and not self.history_task.done():
+            self.history_task.cancel()
+            await asyncio.gather(self.history_task, return_exceptions=True)
         if self.luna:
             await self.luna.close()
         await self.stop_child()

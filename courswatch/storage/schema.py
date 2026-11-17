@@ -59,8 +59,18 @@ def _private_cards(db):
     db.execute('CREATE TABLE IF NOT EXISTS ui_messages(message_id TEXT PRIMARY KEY,user_id TEXT,payload TEXT)')
 
 
+def _call_profiles(db):
+    # Additive provenance: preserve original calls rows, counts and quota paths.
+    db.execute('''CREATE TABLE IF NOT EXISTS call_profiles(
+        call_id INTEGER PRIMARY KEY REFERENCES calls(id), profile_id TEXT NOT NULL,
+        provider TEXT NOT NULL, requested_model_id TEXT NOT NULL,
+        resolved_model_id TEXT, resolved_model_revision TEXT,
+        config_version TEXT NOT NULL, require_zdr INTEGER NOT NULL,
+        capabilities_json TEXT NOT NULL)''')
+
+
 MIGRATIONS = {'state': (_state_base, _canonical_forums, _document_checks),
-              'budget': (_budget_base,), 'private_cards': (_private_cards,)}
+              'budget': (_budget_base, _call_profiles), 'private_cards': (_private_cards,)}
 
 
 def migrate(db, component):

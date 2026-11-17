@@ -22,9 +22,9 @@ d'utiliser un environnement de dépendances déjà installé, sans installation.
 | Profil | Contrats vérifiés |
 |---|---|
 | `core` | Commandes, tâches, rappels, accès privés, présentation, santé, outbox |
-| `conversation` | Luna/quota avec transport factice, ESN, voix, répliques, traduction |
+| `conversation` | Profils DeepSeek/HY4 et quota factices, coordination, mémoire J+7, connaissances, médias, ingestion, ESN, voix et traduction |
 | `documents` | Collecte PDF factice, identités des pièces jointes, versions SHA256, publication et notes gérées |
-| `migration` | Configuration Syncthing synthétique et migration historique sur fixtures |
+| `migration` | Configuration Syncthing synthétique, migrations historiques et copie de rollback quota sans perte des provisions |
 | `regression` | Transitions de fraîcheur et de pipeline, migrations de schéma, imports canoniques et points d’entrée |
 | `operations` | Construction et intégrité des lots, inventaire factice, outils importables sans effets |
 | `all` | Union des six profils explicites, sans doublon |
@@ -43,7 +43,7 @@ de service. Les tests ne doivent pas dépendre d'une configuration installée.
 Le garde-fou est une protection contre les effets de bord accidentels, pas une
 sandbox pour du code hostile. Les dépendances doivent être installées séparément
 avant l'exécution : `discord.py`, `pypdf` et les données `tzdata` sont nécessaires
-à la suite complète. Aucun modèle de traduction ni accès OpenAI n'est requis.
+à la suite complète, ainsi que Pillow pour les fixtures médias. Aucun modèle de traduction ni accès fournisseur payant n'est requis. Le décodage d'animations est réel ; la vision/OCR des modèles est simulée et ne valide pas leur route API réelle.
 
 Les cas de permissions POSIX et de liens symboliques doivent aussi être exécutés
 sous Linux. Un test ignoré sous Windows n'est pas une validation de ces contrats.

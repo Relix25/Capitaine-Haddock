@@ -1,5 +1,7 @@
 # DeepSeek via CommandCode — 17 novembre 2026
 
+> Note locale du 17 novembre 2026 : ce document décrit un état antérieur. La demande explicite autorise maintenant un journal durable du salon autorisé et les descriptions médias ; voir [LOCAL-IMPLEMENTATION.md](LOCAL-IMPLEMENTATION.md). Les autres restrictions restent applicables. Aucun déploiement de ce nouveau code n’a été effectué.
+
 Après l'arrêt explicite du bot, l'utilisateur a demandé de basculer les conversations sur DeepSeek avec son abonnement CommandCode, puis de multiplier le plafond quotidien par dix. Le code applicatif `2cb562fcd8a8e974fb3ea6fa74c14a78144d0770` et la configuration correspondante sont installés sur le VPS. Après l'autorisation des tests et leur réussite décrites plus bas, le service Discord a été remis en route et vérifié prêt.
 
 ## Configuration installée

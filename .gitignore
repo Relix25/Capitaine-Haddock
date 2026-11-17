@@ -32,3 +32,4 @@ config.local.json
 *.zip
 .test-tmp/
 .releases/
+work/
