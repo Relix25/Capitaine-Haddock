@@ -178,7 +178,10 @@ def build_status_snapshot(data_dir, config, bot_ready, latency, manual_running=F
     luna_config = config.get('discord',{}).get('luna',{})
     if luna_config.get('enabled'):
         luna = read_json(data_dir / 'reports/luna-status.json')
-        luna.update(model=luna_config.get('model','gpt-6-luna'),daily_token_limit=luna_config.get('daily_token_limit',1_000_000))
+        provider = luna_config.get('provider','openai')
+        default_model = 'deepseek/deepseek-v4.1-flash' if provider == 'commandcode' else 'gpt-6-luna'
+        luna.update(provider=provider,model=luna_config.get('model',default_model),
+                    daily_token_limit=luna_config.get('daily_token_limit',1_000_000))
         try:
             with closing(sqlite3.connect('file:' + str(data_dir / 'luna-usage.db') + '?mode=ro',uri=True)) as db:
                 totals = usage_totals(db,day)
@@ -284,11 +287,12 @@ def status_embed(snapshot):
                  'unavailable':'Compteur indisponible'}.get(luna.get('status'),'État à vérifier')
         usage = ('{:,} / {:,}'.format(luna['used_tokens'],luna['daily_token_limit']).replace(',',' ')
                  if luna.get('used_tokens') is not None else 'non disponible')
-        value = label+' · '+luna['model']+'\nTokens confirmés aujourd’hui : **'+usage+'** (entrée + sortie, cache inclus).'
+        provider = {'commandcode':'CommandCode','openai':'OpenAI'}.get(luna.get('provider'),'')
+        value = label+' · '+(provider+' · ' if provider else '')+luna['model']+'\nTokens confirmés aujourd’hui : **'+usage+'** (entrée + sortie, cache inclus).'
         if luna.get('reserved_tokens',0):
             value += '\nRéservés / non confirmés : **'+format(luna['reserved_tokens'],',').replace(',',' ')+'** · consommation encore inconnue.'
         value += '\nRemise à zéro à minuit, heure de Bucarest.'
-        embed['fields'].append({'name':'Conversations · Luna','value':value,'inline':False})
+        embed['fields'].append({'name':'Conversations · Haddock','value':value,'inline':False})
     if thumbnail:
         embed['thumbnail'] = {'url':thumbnail}
     return embed

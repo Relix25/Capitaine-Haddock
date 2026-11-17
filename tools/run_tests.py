@@ -128,7 +128,8 @@ def install_safety() -> None:
 def _environment(directory: Path, dependency_paths: list[Path]) -> None:
     for name in tuple(os.environ):
         if name.startswith(("COURS_WATCH_", "COURSWATCH_TEST_")) or name in {
-            "OPENAI_API_KEY", "OPENAI_ADMIN_KEY", "DISCORD_BOT_TOKEN", "DISCORD_WEBHOOK_URL",
+            "OPENAI_API_KEY", "OPENAI_ADMIN_KEY", "CMD_API_KEY", "COMMANDCODE_API_KEY",
+            "DISCORD_BOT_TOKEN", "DISCORD_WEBHOOK_URL",
         }:
             os.environ.pop(name, None)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"

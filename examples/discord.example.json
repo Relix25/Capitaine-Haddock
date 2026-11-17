@@ -9,5 +9,5 @@
   "interactive": true,
   "persona": "haddock",
   "easter_egg": {"enabled": true, "cooldown_seconds": 2, "voice_probability": 0.5},
-  "luna": {"enabled": false, "model": "gpt-6-luna", "daily_token_limit": 1000000}
+  "luna": {"enabled": false, "provider": "commandcode", "model": "deepseek/deepseek-v4.1-flash", "daily_token_limit": 10000000}
 }

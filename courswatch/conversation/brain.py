@@ -20,6 +20,12 @@ REPHRASE_REPLY = 'Tonnerre ! J’ai perdu le fil. Redis-moi ça.'
 REFUSAL_REPLY = 'Celle-là, je la passe. Trouve mieux, ectoplasme.'
 RESPONSE_ERRORS = frozenset(('model_refusal','output_limit','incomplete_response','no_output',
                              'invalid_json','invalid_schema','empty_reply','invalid_response'))
+PROVIDERS = {
+    'openai': {'endpoint':'https://api.openai.com/v1/responses',
+               'key_name':'OPENAI_API_KEY','model':'gpt-6-luna'},
+    'commandcode': {'endpoint':'https://api.commandcode.ai/provider/v1/responses',
+                    'key_name':'CMD_API_KEY','model':'deepseek/deepseek-v4.1-flash'},
+}
 SAMPLE_HINTS = {
     'abordage':'Enthousiasme pour démarrer une action, cri à l’abordage.',
     'parachute':'Un plan risqué ou absurde, sauter sans parachute.',
@@ -99,12 +105,12 @@ def parse_decision(response,identifiers):
     return decision
 
 
-def read_api_key(path=Path('/etc/cours-watch/.env')):
+def read_api_key(path=Path('/etc/cours-watch/.env'),key_name='OPENAI_API_KEY'):
     try:
         for line in path.read_text().splitlines():
             if not line.lstrip().startswith('#') and '=' in line:
                 key,value = line.split('=',1)
-                if key.strip() == 'OPENAI_API_KEY':
+                if key.strip() == key_name:
                     return value.strip().strip('"').strip("'")
     except OSError:
         pass
@@ -115,6 +121,7 @@ def safe_text(text,limit=1800):
     text = str(text or '')
     text = re.sub(r'https://(?:\w+\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\S+','[webhook masqué]',text)
     text = re.sub(r'\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}','[clé masquée]',text)
+    text = re.sub(r'\b(?:cmd|cc)[_-][A-Za-z0-9_-]{12,}','[clé masquée]',text)
     text = re.sub(r'\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{20,}\b','[jeton masqué]',text)
     text = re.sub(r'<@!?\d+>|<@&\d+>','[mention]',text)
     return text.replace('@','@\u200b')[:limit]
@@ -257,15 +264,20 @@ class LunaBrain:
     def __init__(self,data_dir,config,api_key=None,transport=None,now=None):
         self.data = Path(data_dir)
         self.config = config
-        self.key = read_api_key() if api_key is None else api_key
-        self.model = config.get('model','gpt-6-luna')
+        self.provider = config.get('provider','openai')
+        if self.provider not in PROVIDERS:
+            raise ValueError('Unsupported conversation provider')
+        profile = PROVIDERS[self.provider]
+        self.endpoint = profile['endpoint']
+        self.key = read_api_key(key_name=profile['key_name']) if api_key is None else api_key
+        self.model = config.get('model',profile['model'])
         self.persona_version = PERSONA_VERSION
         self.budget = TokenBudget(self.data / 'luna-usage.db',config.get('daily_token_limit',1_000_000),now=now)
         self.transport = transport or self.request
         self.publish(('daily_limit' if self.budget.snapshot()['blocked'] else 'ready') if self.key else 'missing_key')
 
     def publish(self,status,error_code=None,outcome=None):
-        report = {**self.budget.snapshot(),'model':self.model,'persona_version':self.persona_version,'status':status,
+        report = {**self.budget.snapshot(),'provider':self.provider,'model':self.model,'persona_version':self.persona_version,'status':status,
                   'checked_utc':datetime.now(timezone.utc).isoformat(timespec='seconds')}
         if error_code:
             report['error_code'] = error_code
@@ -279,9 +291,12 @@ class LunaBrain:
         os.replace(pending,directory / 'luna-status.json')
 
     def request(self,payload):
-        request = urllib.request.Request('https://api.openai.com/v1/responses',
+        headers = {'Authorization':'Bearer ' + self.key,'Content-Type':'application/json','User-Agent':'UPBCourseWatch/1.0'}
+        if self.provider == 'commandcode':
+            headers['x-cmd-zdr'] = '1'
+        request = urllib.request.Request(self.endpoint,
             data=json.dumps(payload,ensure_ascii=False).encode(),method='POST',
-            headers={'Authorization':'Bearer ' + self.key,'Content-Type':'application/json','User-Agent':'UPBCourseWatch/1.0'})
+            headers=headers)
         try:
             with urllib.request.urlopen(request,timeout=30) as response:
                 return json.load(response)
@@ -314,7 +329,7 @@ class LunaBrain:
         try:
             response = self.transport(payload)
         except LunaError as error:
-            known_unbilled = error.code in ('http_400','http_401','http_403','http_404','http_429')
+            known_unbilled = error.code in ('http_400','http_401','http_402','http_403','http_404','http_422','http_429')
             self.budget.settle(reservation,status=error.code,known_usage=known_unbilled)
             self.publish('error',error.code)
             raise

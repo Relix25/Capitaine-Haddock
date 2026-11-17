@@ -2,14 +2,16 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timezone
 import json
+import io
 import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+import urllib.error
+from unittest.mock import Mock, patch
 
 from luna_brain import (TokenBudget, LunaBrain, BudgetExhausted, LunaError,
-                        ChatMemory, ChatCadence, addressed, safe_text)
+                        ChatMemory, ChatCadence, addressed, safe_text, read_api_key)
 
 
 def response(action='text',reply='À bord, camarade !',sample='none',usage=(100,20)):
@@ -83,6 +85,85 @@ class LunaTests(unittest.TestCase):
         self.assertEqual(brain.budget.snapshot()['used_tokens'],120)
         for path in self.root.rglob('*'):
             if path.is_file(): self.assertNotIn(b'PRIVATE_SENTINEL',path.read_bytes())
+
+    def test_commandcode_uses_its_own_endpoint_key_zdr_and_structured_decision(self):
+        brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='cmd_private_synthetic_123456789')
+        with patch('luna_brain.urllib.request.urlopen',return_value=io.BytesIO(json.dumps(response()).encode())) as send:
+            decision = brain.decide([{'speaker':'Alice','text':'PRIVATE_SENTINEL','is_bot':False}],True)
+        self.assertEqual(decision['action'],'text')
+        send.assert_called_once()
+        request = send.call_args.args[0]
+        self.assertEqual(request.full_url,'https://api.commandcode.ai/provider/v1/responses')
+        self.assertEqual(request.get_header('Authorization'),'Bearer cmd_private_synthetic_123456789')
+        self.assertEqual(request.get_header('X-cmd-zdr'),'1')
+        payload = json.loads(request.data)
+        self.assertEqual(payload['model'],'deepseek/deepseek-v4.1-flash')
+        self.assertFalse(payload['store'])
+        self.assertTrue(payload['text']['format']['strict'])
+        self.assertEqual(brain.budget.snapshot()['used_tokens'],120)
+        report = json.loads((self.root/'reports/luna-status.json').read_text())
+        self.assertEqual(report['provider'],'commandcode')
+        for path in self.root.rglob('*'):
+            if path.is_file():
+                content = path.read_bytes()
+                self.assertNotIn(b'PRIVATE_SENTINEL',content)
+                self.assertNotIn(b'cmd_private_synthetic_123456789',content)
+
+    def test_commandcode_missing_key_never_falls_back_to_openai(self):
+        transport = Mock()
+        with patch('luna_brain.read_api_key',return_value='') as read:
+            brain = LunaBrain(self.root,{'provider':'commandcode'},transport=transport)
+        read.assert_called_once_with(key_name='CMD_API_KEY')
+        with self.assertRaises(LunaError) as error:
+            brain.decide([],True)
+        self.assertEqual(error.exception.code,'missing_key')
+        transport.assert_not_called()
+        self.assertEqual(brain.budget.snapshot()['calls'],0)
+
+    def test_key_reader_selects_only_the_requested_private_env_entry(self):
+        env = self.root/'synthetic.env'
+        env.write_text('# CMD_API_KEY=comment\nOPENAI_API_KEY="old-fake"\nCMD_API_KEY=\'cmd_fake_only\'\n')
+        self.assertEqual(read_api_key(env),'old-fake')
+        self.assertEqual(read_api_key(env,key_name='CMD_API_KEY'),'cmd_fake_only')
+        self.assertEqual(read_api_key(env,key_name='ABSENT_KEY'),'')
+
+    def test_unknown_provider_is_rejected_before_accessing_keys_or_ledger(self):
+        with patch('luna_brain.read_api_key') as read:
+            with self.assertRaisesRegex(ValueError,'Unsupported conversation provider'):
+                LunaBrain(self.root,{'provider':'https://untrusted.invalid'})
+        read.assert_not_called()
+        self.assertFalse((self.root/'luna-usage.db').exists())
+
+    def test_provider_and_limit_change_preserve_confirmed_usage(self):
+        before = LunaBrain(self.root,{},api_key='fake',transport=lambda _:response())
+        before.decide([],True)
+        after = LunaBrain(self.root,{'provider':'commandcode','daily_token_limit':10_000_000},
+                          api_key='fake',transport=lambda _:response())
+        self.assertEqual(after.budget.snapshot()['used_tokens'],120)
+        after.decide([],True)
+        snapshot = after.budget.snapshot()
+        self.assertEqual(snapshot['daily_token_limit'],10_000_000)
+        self.assertEqual(snapshot['used_tokens'],240)
+        self.assertEqual(snapshot['calls'],2)
+        self.assertEqual(snapshot['remaining_tokens'],9_999_760)
+
+    def test_commandcode_refuses_zdr_without_retry_or_provider_fallback(self):
+        brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='fake')
+        error = urllib.error.HTTPError(brain.endpoint,422,'synthetic',{},None)
+        with patch('luna_brain.urllib.request.urlopen',side_effect=error) as send:
+            with self.assertRaises(LunaError) as result:
+                brain.decide([],True)
+        self.assertEqual(result.exception.code,'http_422')
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0].full_url,brain.endpoint)
+        self.assertEqual(brain.budget.snapshot()['reserved_tokens'],0)
+
+    def test_commandcode_secret_patterns_are_scrubbed_from_memory(self):
+        memory = ChatMemory()
+        memory.add('Alice','clé cmd_synthetic_abcdefghijklmnop et cc_synthetic_abcdefghijklmnop')
+        content = json.dumps(memory.context())
+        self.assertNotIn('abcdefghijklmnop',content)
+        self.assertIn('masqu',content)
 
     def test_timeout_retains_reservation_and_unbilled_error_releases_it(self):
         transport = Mock(side_effect=LunaError('connection_failed'))

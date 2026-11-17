@@ -210,6 +210,7 @@ class CourseBot(discord.Client):
                           easter_egg_enabled=self.easter_egg_enabled,message_content_intent=self.intents.message_content,
                           voice_samples=len(self.voice_samples),voice_probability=self.voice_probability,
                           luna_enabled=self.luna_enabled,luna_model=self.luna.brain.model if self.luna else None,
+                          luna_provider=self.luna.brain.provider if self.luna else None,
                           luna_persona=self.luna.brain.persona_version if self.luna else None,
                           voice_enabled=bool(self.voice_probability and self.voice_samples))
         previous = read_json(DATA / 'reports/bot-status.json').get('last_manual_scan',{})

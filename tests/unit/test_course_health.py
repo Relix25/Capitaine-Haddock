@@ -126,6 +126,23 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(snapshot['batches'][0]['kind'],'updates')
         self.assertEqual(snapshot['batches'][0]['confirmed'],1)
 
+    def test_commandcode_status_displays_provider_model_and_ten_million_ceiling(self):
+        self.config['discord']['luna'] = {'enabled':True,'provider':'commandcode',
+                                         'daily_token_limit':10_000_000}
+        ledger = TokenBudget(self.root/'luna-usage.db',10_000_000,now=lambda:self.now)
+        identity = ledger.reserve(100,'direct')
+        ledger.settle(identity,80,20)
+        (self.root/'reports/luna-status.json').write_text(json.dumps({'status':'ready','provider':'openai','model':'old'}))
+        snapshot = self.snapshot()
+        self.assertEqual(snapshot['luna']['provider'],'commandcode')
+        self.assertEqual(snapshot['luna']['model'],'deepseek/deepseek-v4.1-flash')
+        self.assertEqual(snapshot['luna']['used_tokens'],100)
+        self.assertEqual(snapshot['luna']['daily_token_limit'],10_000_000)
+        card = str(status_embed(snapshot))
+        self.assertIn('CommandCode',card)
+        self.assertIn('100 / 10 000 000',card)
+        self.assertIn('Conversations · Haddock',card)
+
     def test_luna_status_reads_today_ledger_without_changing_it_and_resets_at_midnight(self):
         self.config['discord']['luna'] = {'enabled':True,'daily_token_limit':100,'model':'gpt-6-luna'}
         ledger = TokenBudget(self.root/'luna-usage.db',100,now=lambda:self.now)
