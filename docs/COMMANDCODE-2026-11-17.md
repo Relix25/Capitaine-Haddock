@@ -62,3 +62,13 @@ La suite complète compte maintenant 250 tests : 246 réussis et quatre ignorés
 L'archive propre contient 209 fichiers, SHA256 `09432fd7c71dd98a9d3d155834ddef053e3646adfeb2315e0e8c9bbd68a67b52`. Seuls le module de personnalité, son fichier texte, le module de décision et le constructeur de lots ont été installés ; les anciens scripts retirés de Git n'ont pas été supprimés du VPS. Le marqueur installé couvre désormais 67 fichiers. Les configurations et l'état des timers sont préservés.
 
 Après sauvegarde dans `/var/backups/cours-watch/persona-20261117-fad470e`, un appel synthétique réel a validé la réponse JSON, le calcul demandé et le mode dialogue sans didascalie, en environ 2,012 s. Il n'a transmis aucun historique réel ni fait de cours et n'a envoyé aucun message Discord. Le bot a ensuite été redémarré, prêt avec le nouveau prompt, DeepSeek V4.1 Flash et le plafond de 10 millions ; les quatre commandes ont été retrouvées et aucune erreur n'a été observée dans les journaux examinés.
+
+## Paroles seules, sans mise en scène
+
+À la demande suivante de l'utilisateur, le lot `bb9ed2efcea4efcaec87d8be135629025d7e5618` retire les sections de mimiques et de décor, les réglages de jeu de rôle et les gestes écrits dans les exemples. Le ton, le vocabulaire, les jurons et l'aide concrète sont conservés. Les préférences restantes concernent uniquement le langage ; le contrat Discord impose des paroles seules, même si un message demande d'ajouter des gestes. La version de personnalité est `haddock-dialogue-v5`.
+
+Le prompt est désormais une adaptation du fichier fourni, SHA256 `39d1106413653e7a1f0d8cf6067c8a9b47b49d571945f745b9523501c60c5c42`. Le fichier original externe n'a pas été réécrit. L'archive propre comporte 210 fichiers, SHA256 `82a1b5b3ffef5ad13516d0f3014b06bf8b060f05667848a1e2ffcaeb5f38819d`.
+
+Les 250 tests passent sous Linux ; Windows en exécute 250 avec les quatre mêmes cas de liens symboliques ignorés. L'installation et la restauration après échec ont été répétées sur fixtures. Seuls `persona.py` et `prompt-haddock.txt` ont été remplacés, après sauvegarde privée dans `/var/backups/cours-watch/dialogue-20261117-bb9ed2e`.
+
+Trois appels synthétiques réels ont contrôlé une salutation, une aide sur une imprimante et une demande explicite de mimiques. Tous ont produit un JSON exploitable et passé les contrôles d'absence d'action en italique, de geste narré ou de didascalie entre parenthèses/crochets. Aucun historique de conversation ni fait de cours n'a été envoyé et aucun message Discord n'a été publié pour ces tests. Le bot a redémarré prêt avec le nouveau prompt, les quatre commandes et les 67 empreintes conformes. Configuration, plafond à 10 millions et état des timers sont préservés.
