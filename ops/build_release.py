@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 
 MANIFEST = "RELEASE-MANIFEST.json"
+PACKAGE_DATA = {"courswatch/conversation/prompt-haddock.txt"}
 TREE_SUFFIXES = {
     "courswatch": {".py"}, "ops": {".py"}, "tools": {".py"},
     "tests": {".py", ".md"}, "systemd": {".service", ".timer", ".path", ".conf"},
@@ -31,6 +32,8 @@ def safe_name(name):
 
 def allowed_source(name):
     path = safe_name(name)
+    if name in PACKAGE_DATA:
+        return True
     if len(path.parts) == 1:
         return (path.suffix in {".py", ".sh"} or name == "README.md"
                 or (name.startswith("requirements") and path.suffix in {".lock", ".txt"}))
@@ -54,6 +57,7 @@ def source_files(root):
             selected.extend(path for path in folder.rglob("*")
                             if path.is_file() and path.suffix in suffixes
                             and not any(part in FORBIDDEN for part in path.relative_to(root).parts))
+    selected.extend(root / name for name in PACKAGE_DATA if (root / name).is_file())
     for path in sorted(selected):
         name = path.relative_to(root).as_posix()
         if not allowed_source(name):

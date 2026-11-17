@@ -5,3 +5,4 @@
 *.timer text eol=lf
 *.path text eol=lf
 *.conf text eol=lf
+courswatch/conversation/prompt-haddock.txt -text

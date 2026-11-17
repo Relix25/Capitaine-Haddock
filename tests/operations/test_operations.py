@@ -74,6 +74,18 @@ class OperationsTests(unittest.TestCase):
             build_release(self.root, target, revision="a" * 40)
         self.assertEqual(target.read_bytes(), b"keep")
 
+    def test_release_carries_only_the_declared_character_prompt_data(self):
+        prompt = "# Rôle du capitaine\nPrompt synthétique.".encode('utf-8')
+        self.write("courswatch/conversation/prompt-haddock.txt", prompt)
+        self.write("courswatch/conversation/private-note.txt", b"must not be exported")
+        target = self.root / "release.tar.gz"
+        manifest = build_release(self.root, target, revision="a" * 40)
+        self.assertEqual([entry['path'] for entry in manifest['files']],
+                         ["courswatch/conversation/prompt-haddock.txt"])
+        with tarfile.open(target, "r:gz") as archive:
+            self.assertEqual(archive.extractfile("courswatch/conversation/prompt-haddock.txt").read(),prompt)
+        verify_release(target)
+
     def test_release_rejects_tampered_member(self):
         self.write("course_bot.py", b"original")
         path = self.root / "release.tar.gz"

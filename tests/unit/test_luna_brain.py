@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from luna_brain import (TokenBudget, LunaBrain, BudgetExhausted, LunaError,
                         ChatMemory, ChatCadence, addressed, safe_text, read_api_key)
+from courswatch.conversation.persona import PERSONA_TEXT, DISCORD_CONTRACT, PERSONA_VERSION
 
 
 def response(action='text',reply='À bord, camarade !',sample='none',usage=(100,20)):
@@ -108,6 +109,19 @@ class LunaTests(unittest.TestCase):
                 content = path.read_bytes()
                 self.assertNotIn(b'PRIVATE_SENTINEL',content)
                 self.assertNotIn(b'cmd_private_synthetic_123456789',content)
+
+    def test_supplied_character_prompt_reaches_the_model_with_discord_contract(self):
+        transport = Mock(return_value=response())
+        brain = LunaBrain(self.root,{'provider':'commandcode'},api_key='fake',transport=transport)
+        brain.decide([{'speaker':'Alice','text':'Haddock, /mode dialogue','is_bot':False}],True)
+        payload = transport.call_args.args[0]
+        self.assertEqual(payload['instructions'],PERSONA_TEXT.rstrip()+'\n\n'+DISCORD_CONTRACT)
+        self.assertEqual(brain.persona_version,PERSONA_VERSION)
+        self.assertTrue(payload['text']['format']['strict'])
+        self.assertEqual(payload['max_output_tokens'],700)
+        report = json.loads((self.root/'reports/luna-status.json').read_text())
+        self.assertEqual(report['persona_version'],PERSONA_VERSION)
+        self.assertNotIn(PERSONA_TEXT,json.dumps(report))
 
     def test_commandcode_missing_key_never_falls_back_to_openai(self):
         transport = Mock()
