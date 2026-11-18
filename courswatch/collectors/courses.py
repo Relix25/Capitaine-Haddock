@@ -155,6 +155,14 @@ async def moodle(context, course, timeout,pdf_store=None):
 
 
 
+def merge_teams_links(body, links):
+    """Append link targets on real newlines, only when not already in the text."""
+    extra = [x['text'] + ' ' + x['url'] for x in links if x['url'] not in body]
+    if extra:
+        body = body + '\n' + '\n'.join(extra)
+    return body
+
+
 async def click_optional(page, role, pattern):
     target = page.get_by_role(role, name=re.compile(pattern, re.I))
     if await target.count() == 1 and await target.is_visible():
@@ -199,13 +207,11 @@ async def teams(context, course, timeout):
                         await candidate.click(timeout=2000)
         rows = await posts.evaluate_all('''elements=>elements.map(e=>{
           const heading=e.querySelector('h2,h3,[role="heading"]');
-          const paragraphs=Array.from(new Set(Array.from(e.querySelectorAll('p,li')).map(p=>p.innerText.trim()).filter(Boolean)));
           const anchors=Array.from(e.querySelectorAll('a[href]')).map(a=>({text:a.innerText.trim(),url:a.href}));
           const clone=e.cloneNode(true);
           clone.querySelectorAll('button,time,[role="toolbar"]').forEach(x=>x.remove());
           return {key:e.id,title:heading ? heading.innerText : 'Publication',
-             body:paragraphs.length ? paragraphs.join('\\n') : clone.innerText,
-             links:anchors};
+             body:clone.innerText,links:anchors};
         })''')
         if not rows:
             return Result(source, course['label'], 'selector_unverified', [], 'Aucune publication Teams reconnue')
@@ -213,7 +219,7 @@ async def teams(context, course, timeout):
         for row in rows:
             body = clean(row['body'])
             links = [x for x in row['links'] if urllib.parse.urlparse(x['url']).scheme == 'https']
-            body += '\n' + '\n'.join(x['text'] + ' ' + x['url'] for x in links)
+            body = merge_teams_links(body, links)
             items.append(Item(row['key'], row['title'], body, course.get('teams_url') or 'https://teams.cloud.microsoft/'))
         return Result(source, course['label'], 'ok', items,
                       'Publications/réponses effectivement chargées dans Général ; fichiers non annoncés et autres canaux hors couverture.')

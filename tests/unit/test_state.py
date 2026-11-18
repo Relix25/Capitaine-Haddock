@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from courswatch.runtime import Item, Result, State, import_cookies, notify, format_notification, moodle_cookies, save_moodle_cookies, canonical_forum_url, load_discord_secrets
+from courswatch.collectors.courses import merge_teams_links
 
 
 class StateTests(unittest.TestCase):
@@ -88,6 +89,22 @@ class StateTests(unittest.TestCase):
                 Item('forum:p2118', 'Intermediate presentation', 'Due 15 November', canonical + '#p2118')])
         self.state.ingest(snapshot('https://curs.upb.ro/2026/mod/forum/discuss.php?d=923'))
         self.assertEqual(self.state.ingest(snapshot('https://curs.upb.ro/2026/mod/forum/discuss.php?d=923&parent=2118#p2118')), [])
+
+    def test_long_body_is_marked_as_truncated_instead_of_cut_silently(self):
+        event={'kind':'new','course':'AAIT','source':'teams:AAIT','title':'Consignes',
+               'body':'ligne de consigne\n'*400,'url':'https://teams.cloud.microsoft/'}
+        message=format_notification(event,'','plain')
+        self.assertLessEqual(len(message),1950)
+        self.assertIn('\u2026 texte complet avec le bouton',message)
+        short=format_notification({**event,'body':'court'},'','plain')
+        self.assertNotIn('\u2026',short)
+
+    def test_teams_links_use_real_newlines_and_are_not_duplicated(self):
+        body=merge_teams_links('Rendu vendredi.',[{'text':'Voir','url':'https://curs.upb.ro/x'}])
+        self.assertEqual(body,'Rendu vendredi.\nVoir https://curs.upb.ro/x')
+        self.assertNotIn(chr(92),body)
+        already=merge_teams_links('consulte https://curs.upb.ro/x ici',[{'text':'lien','url':'https://curs.upb.ro/x'}])
+        self.assertEqual(already,'consulte https://curs.upb.ro/x ici')
 
     def test_haddock_keeps_deadline_and_only_configured_mentions(self):
         event={'kind':'modified','course':'AITDM','source':'teams:AITDM',
