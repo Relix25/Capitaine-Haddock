@@ -43,6 +43,16 @@ class ParserTests(unittest.TestCase):
                {**item('locked'),'locked':True}, {**item('gate'),'rules':{'gate':{'activeOrder':['password']}}},item()]
         self.assertEqual(len(parse_page(page(links))),1)
 
+    def test_link_without_id_or_title_is_skipped_not_fatal(self):
+        links=[item(),{'id':'','url':'https://forms.gle/noid','title':'Sans id'},
+               {'id':'2','url':'https://forms.gle/notitle','title':'   '}]
+        parsed=parse_page(page(links))
+        self.assertEqual([x['url'] for x in parsed],['https://forms.gle/event1'])
+
+    def test_profile_with_links_but_none_usable_is_rejected(self):
+        with self.assertRaises(ParseError): parse_page(page([{'id':'header','type':'HEADER'}]))
+        self.assertEqual(parse_page(page([])),[])
+
 
 class StateTests(unittest.TestCase):
     def setUp(self): self.state=EventState(':memory:')

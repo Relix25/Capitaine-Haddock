@@ -69,7 +69,7 @@ def parse_page(raw):
             if not item.get('url'): continue
             identity=str(item.get('id',''))
             title=' '.join(str(item.get('title','')).split())
-            if not identity or not title: raise ParseError('Link identity or title unavailable')
+            if not identity or not title: continue
             try: url=canonical_url(item['url'])
             except (ValueError,ParseError): continue
             metadata=item.get('metaData') or {}
@@ -77,6 +77,7 @@ def parse_page(raw):
             if description.startswith('Access Google Forms with a personal Google account'): description=''
             found.setdefault(url,{'id':identity,'title':title,'url':url,'description':description[:4000]})
     visit(links)
+    if links and not found: raise ParseError('No usable live links on the profile')
     return list(found.values())
 
 
@@ -84,26 +85,32 @@ async def fetch_links():
     # Anonymous ordinary Chrome: no course session, credentials, spoofing or
     # challenge bypass. HTTP and parser failures preserve the previous baseline.
     from playwright.async_api import async_playwright
+    last_error=None
     async with async_playwright() as p:
         browser=await p.chromium.launch(channel='chrome',headless=True,chromium_sandbox=True)
         try:
-            context=await browser.new_context(accept_downloads=False)
-            page=await context.new_page()
-            # The published SSR data does not depend on optional third-party
-            # scripts completing DOMContentLoaded.
-            response=await page.goto(PROFILE,wait_until='commit',timeout=30000)
-            if response is None or response.status!=200: raise ParseError('Linktree HTTP unavailable')
-            if canonical_url(page.url)!=PROFILE: raise ParseError('Unexpected profile redirect')
-            data=page.locator('script#__NEXT_DATA__')
-            try:
-                await data.wait_for(state='attached',timeout=20000)
-            except Exception:
-                print(json.dumps({'esn_browser_status':response.status,'esn_browser_title':(await page.title())[:150],
-                                  'profile_data_available':False}),flush=True)
-                raise
-            raw='<script id="__NEXT_DATA__">'+(await data.text_content() or '')+'</script>'
-            if len(raw)>4*1024*1024: raise ParseError('Linktree response exceeds limit')
-            return parse_page(raw)
+            for attempt in range(2):
+                context=await browser.new_context(accept_downloads=False)
+                try:
+                    page=await context.new_page()
+                    # domcontentloaded lets the initial SSR document settle; the
+                    # published data does not depend on optional third-party scripts.
+                    response=await page.goto(PROFILE,wait_until='domcontentloaded',timeout=30000)
+                    if response is None or response.status!=200:
+                        last_error=ParseError('Linktree HTTP unavailable'); continue
+                    if canonical_url(page.url)!=PROFILE: raise ParseError('Unexpected profile redirect')
+                    data=page.locator('script#__NEXT_DATA__')
+                    try:
+                        await data.wait_for(state='attached',timeout=20000)
+                    except Exception:
+                        print(json.dumps({'esn_browser_status':response.status,'esn_browser_title':(await page.title())[:150],
+                                          'profile_data_available':False}),flush=True)
+                        last_error=ParseError('Linktree profile data unavailable'); continue
+                    raw='<script id="__NEXT_DATA__">'+(await data.text_content() or '')+'</script>'
+                    if len(raw)>4*1024*1024: raise ParseError('Linktree response exceeds limit')
+                    return parse_page(raw)
+                finally: await context.close()
+            raise last_error or ParseError('Linktree fetch failed')
         finally: await browser.close()
 
 
@@ -212,7 +219,9 @@ async def main():
             print(json.dumps({'status':'busy','action':'skipped'})); return 0
         previous={}
         path=args.data/'reports/esn-status.json'
-        if path.exists(): previous=json.loads(path.read_text())
+        if path.exists():
+            try: previous=json.loads(path.read_text())
+            except (OSError,ValueError): previous={}
         report={**previous,'checked_utc':stamp(),'profile':PROFILE,'interval_seconds':300,
             'role_id':config.get('role_id'),'channel_id':config['channel_id']}
         state=None

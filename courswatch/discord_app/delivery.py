@@ -23,11 +23,16 @@ def format_notification(event, mentions='', persona='plain'):
         title = f"{introduction}\n**{event['course']} · {event['source'].split(':')[0]}**"
     else:
         title = f"**{event['course']} · {event['source'].split(':')[0]} · {event['kind']}**"
-    text = f'{mentions}\n{title}\n{heading}\n{body[:1250]}'
+    clipped = body[:1250]
+    if len(body) > 1250:
+        clipped += '\n… texte complet avec le bouton « Plus d’infos » en privé'
+    text = f'{mentions}\n{title}\n{heading}\n{clipped}'
     url = event.get('url', '')
     if url:
         text += '\n<' + url + '>'
-    return text[:1950]
+    if len(text) > 1950:
+        text = text[:1949] + '…'
+    return text
 
 
 
